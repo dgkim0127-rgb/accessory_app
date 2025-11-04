@@ -1,0 +1,42 @@
+@'
+# Flutter
+.dart_tool/
+.packages
+.pub-cache/
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+pubspec.lock
+.melos_tool/
+
+# Android
+android/.gradle/
+android/.idea/
+android/**/build/
+android/**/captures/
+android/**/local.properties
+**/intermediates/
+**/generated/
+
+# iOS
+ios/Pods/
+ios/.symlinks/
+ios/Flutter/Flutter.framework
+ios/Flutter/Flutter.podspec
+ios/Flutter/Generated.xcconfig
+ios/Flutter/App.framework
+ios/Flutter/ephemeral/
+
+# Web
+web/.flutter-plugins
+web/.dart_tool
+
+# Project backups
+android_backup_*/
+*_backup_*/
+
+# OS
+.DS_Store
+Thumbs.db
+'@ | Set-Content .gitignore
+

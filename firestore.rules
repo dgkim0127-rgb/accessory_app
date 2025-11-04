@@ -1,0 +1,106 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    // 역할은 "users/{uid}.role" 기준 (소문자 'user' | 'admin' | 'super')
+    function myRole() {
+      return signedIn() &&
+             exists(/databases/$(database)/documents/users/$(request.auth.uid))
+        ? get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role
+        : 'guest';
+    }
+    function isSuper() { return myRole() == 'super'; }
+    function isAdmin() { return myRole() == 'admin' || isSuper(); }
+
+    // ───────── users ─────────
+    match /users/{uid} {
+      // 읽기: 관리자 또는 본인
+      allow read: if (signedIn() && request.auth.uid == uid) || isAdmin();
+
+      // 생성: 본인 or super
+      allow create: if signedIn() && (request.auth.uid == uid || isSuper());
+
+      // 수정:
+      //  - super: 전체 가능
+      //  - 일반: 본인 문서만, role 변경 금지
+      //    (기존 문서에 role이 "없을" 때 최초 1회 'user'로 설정 허용)
+      allow update: if signedIn() && (
+        isSuper() ||
+        (
+          request.auth.uid == uid &&
+          (
+            // role을 건드리지 않는 일반 수정
+            !request.resource.data.keys().hasAny(['role'])
+            // role이 원래 있었으면 동일 값만 허용
+            || (resource.data.keys().hasAny(['role']) && request.resource.data.role == resource.data.role)
+            // role이 원래 없을 때 최초 1회 'user'로 세팅 허용
+            || (!resource.data.keys().hasAny(['role']) && request.resource.data.role == 'user')
+          )
+        )
+      );
+
+      // 삭제: super만
+      allow delete: if isSuper();
+    }
+
+    // ───────── posts ─────────
+    match /posts/{postId} {
+      allow read: if true;                       // 누구나 열람
+      allow create, update, delete: if isAdmin();// 관리자 이상만 쓰기
+    }
+
+    // ───────── likes ─────────
+    match /likes/{likeId} {
+      // 읽기: 본인 문서는 본인 / 관리자 이상은 전체
+      allow read: if (signedIn() && resource.data.userUid == request.auth.uid) || isAdmin();
+
+      // 생성/삭제: 본인만 (✅ super도 허용: admin과 동일 취급)
+      allow create, delete: if signedIn()
+        && request.resource.data.userUid == request.auth.uid;
+
+      allow update: if false;
+    }
+
+    // ───────── activity_logs ─────────
+    match /activity_logs/{logId} {
+      // 읽기: 관리자/최종관리자 전체 열람, 일반은 본인 것만
+      allow read: if isAdmin() || (signedIn() && resource.data.userUid == request.auth.uid);
+
+      // 생성: 본인 기록만 남기기 허용 (앱에서 로그인/로그아웃 시 기록)
+      allow create: if signedIn() && request.resource.data.userUid == request.auth.uid;
+
+      allow update, delete: if false;
+    }
+
+    // ───────── DM ─────────
+    // 모두 발신/수신 가능. 참가자(정확히 2명)만 접근
+    function participates(threadId) {
+      return signedIn() &&
+        (request.auth.uid in get(
+          /databases/$(database)/documents/dm_threads/$(threadId)
+        ).data.participants);
+    }
+
+    match /dm_threads/{threadId} {
+      allow read: if participates(threadId);
+
+      // 생성: 로그인 유저가 participants 2명 목록에 포함되어 있어야 함
+      allow create: if signedIn()
+        && request.resource.data.participants is list
+        && request.resource.data.participants.size() == 2
+        && request.resource.data.participants[0] != request.resource.data.participants[1]
+        && (request.auth.uid in request.resource.data.participants);
+
+      allow update, delete: if participates(threadId);
+
+      match /messages/{msgId} {
+        allow read, create: if participates(threadId);
+        allow update, delete: if false;
+      }
+    }
+  }
+}

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=Edge" />
+
+  <!-- iOS 안전영역 + 확대방지 + 스케일 고정 -->
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1.0, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+
+  <!-- Flutter: iOS에서 더 안정적인 HTML 렌더러 -->
+  <meta name="flutter-renderer" content="html" />
+
+  <!-- 서비스워커 비활성(기존 SW 캐시로 인한 새 코드 미반영 방지) -->
+  <meta name="flutter-service-worker" content="false" />
+
+  <!-- iOS PWA -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Accessory">
+
+  <!-- Flutter가 배포 시 자동 치환 -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <title>Accessory</title>
+  <meta name="description" content="Accessory App" />
+
+  <!-- 로더 -->
+  <script src="flutter.js" defer></script>
+
+  <!-- 아이콘/매니페스트 -->
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+  <link rel="manifest" href="manifest.json">
+
+  <!-- 기존에 등록된 모든 서비스워커/캐시 제거 (사파리 포함) -->
+  <script>
+    (function killAllServiceWorkers(){
+      if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.getRegistrations?.().then(regs => {
+          regs.forEach(reg => reg.unregister().catch(()=>{}));
+        });
+        navigator.serviceWorker.getRegistration?.().then(reg => {
+          if (reg && reg.active) { reg.active.postMessage({type:'SKIP_WAITING'}); }
+        }).catch(()=>{});
+      }
+      if (window.caches?.keys) {
+        caches.keys().then(keys => keys.forEach(k => caches.delete(k).catch(()=>{})));
+      }
+    })();
+  </script>
+
+  <!-- iOS 텍스트 입력 시 자동 확대(zoom) 방지 & 안전영역 처리 -->
+  <style>
+    html, body, #flutter_target { height: 100%; background:#ffffff; }
+    body { margin: 0; }
+    input, textarea, select, button { font-size: 16px; } /* 16px 미만이면 iOS가 자동 확대 */
+    .safe { padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+  </style>
+</head>
+<body>
+<div id="flutter_target" class="safe"></div>
+
+<script>
+  // 캐시 튕김 방지용 쿼리스트링
+  window.addEventListener('load', function () {
+    const v = Date.now().toString();
+    _flutter.loader
+      .loadEntrypoint({ entrypointUrl: 'main.dart.js?v=' + v })
+      .then(engineInitializer => engineInitializer.initializeEngine())
+      .then(appRunner => appRunner.runApp());
+  });
+</script>
+</body>
+</html>
