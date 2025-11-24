@@ -1,3 +1,4 @@
+// lib/admin/admin_manage_page.dart  ✅ 최종 (브랜드 · 카테고리 관리)
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
@@ -96,15 +97,19 @@ class _BrandsAdmin extends StatelessWidget {
               ),
               TextField(
                 controller: logoC,
-                decoration:
-                const InputDecoration(labelText: '로고 URL (선택, https://)'),
+                decoration: const InputDecoration(
+                    labelText: '로고 URL (선택, https://)'),
               ),
             ],
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('저장')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('취소')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('저장')),
         ],
       ),
     );
@@ -149,7 +154,9 @@ class _BrandsAdmin extends StatelessWidget {
         title: const Text('삭제 확인'),
         content: Text('브랜드 "$nameKor" 을(를) 삭제할까요?'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('취소')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
@@ -192,7 +199,8 @@ class _BrandsAdmin extends StatelessWidget {
             stream: brands,
             builder: (_, snap) {
               if (snap.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator(strokeWidth: 1.5));
+                return const Center(
+                    child: CircularProgressIndicator(strokeWidth: 1.5));
               }
               final docs = snap.data?.docs ?? const [];
               if (docs.isEmpty) {
@@ -217,23 +225,31 @@ class _BrandsAdmin extends StatelessWidget {
                     child: ListTile(
                       leading: CircleAvatar(
                         backgroundColor: const Color(0xFFF4F4F4),
-                        backgroundImage: logo.isNotEmpty ? NetworkImage(logo) : null,
-                        child: logo.isEmpty ? const Icon(Icons.storefront_outlined) : null,
+                        backgroundImage:
+                        logo.isNotEmpty ? NetworkImage(logo) : null,
+                        child: logo.isEmpty
+                            ? const Icon(Icons.storefront_outlined)
+                            : null,
                       ),
-                      title: Text(kor, style: const TextStyle(fontWeight: FontWeight.w700)),
+                      title: Text(
+                        kor,
+                        style: const TextStyle(fontWeight: FontWeight.w700),
+                      ),
                       subtitle: eng.isNotEmpty ? Text(eng) : null,
                       trailing: Wrap(
                         spacing: 4,
                         children: [
                           IconButton(
                             tooltip: '수정',
-                            onPressed: () => _openEditor(context, docId: d.id, data: m),
+                            onPressed: () =>
+                                _openEditor(context, docId: d.id, data: m),
                             icon: const Icon(Icons.edit),
                           ),
                           IconButton(
                             tooltip: '삭제',
                             onPressed: () => _delete(context, d.id, kor),
-                            icon: const Icon(Icons.delete, color: Colors.red),
+                            icon:
+                            const Icon(Icons.delete, color: Colors.red),
                           ),
                         ],
                       ),
@@ -258,7 +274,8 @@ class _CategoriesAdmin extends StatelessWidget {
       {String? docId, Map<String, dynamic>? data}) async {
     final codeC = TextEditingController(text: data?['code'] ?? '');
     final labelC = TextEditingController(text: data?['label'] ?? '');
-    final orderC = TextEditingController(text: (data?['order'] ?? 100).toString());
+    final orderC =
+    TextEditingController(text: (data?['order'] ?? 100).toString());
 
     final saved = await showDialog<bool>(
       context: context,
@@ -269,23 +286,30 @@ class _CategoriesAdmin extends StatelessWidget {
             children: [
               TextField(
                 controller: labelC,
-                decoration: const InputDecoration(labelText: '표시 이름 (예: 반지)'),
+                decoration:
+                const InputDecoration(labelText: '표시 이름 (예: 반지)'),
               ),
               TextField(
                 controller: codeC,
-                decoration: const InputDecoration(labelText: '코드 (예: ring)'),
+                decoration:
+                const InputDecoration(labelText: '코드 (예: ring)'),
               ),
               TextField(
                 controller: orderC,
                 keyboardType: TextInputType.number,
-                decoration: const InputDecoration(labelText: '정렬(숫자, 작을수록 위)'),
+                decoration: const InputDecoration(
+                    labelText: '정렬(숫자, 작을수록 위)'),
               ),
             ],
           ),
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
-          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('저장')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('취소')),
+          ElevatedButton(
+              onPressed: () => Navigator.pop(context, true),
+              child: const Text('저장')),
         ],
       ),
     );
@@ -323,7 +347,8 @@ class _CategoriesAdmin extends StatelessWidget {
     }
   }
 
-  Future<void> _delete(BuildContext context, String docId, String label) async {
+  Future<void> _delete(
+      BuildContext context, String docId, String label) async {
     final ok = await showDialog<bool>(
       context: context,
       builder: (_) => AlertDialog(
@@ -331,7 +356,9 @@ class _CategoriesAdmin extends StatelessWidget {
         content: Text('카테고리 "$label" 을(를) 삭제할까요?\n'
             '※ 이 카테고리를 사용 중인 게시물은 필드만 남습니다.'),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
+          TextButton(
+              onPressed: () => Navigator.pop(context, false),
+              child: const Text('취소')),
           TextButton(
             onPressed: () => Navigator.pop(context, true),
             style: TextButton.styleFrom(foregroundColor: Colors.red),
@@ -341,7 +368,10 @@ class _CategoriesAdmin extends StatelessWidget {
       ),
     );
     if (ok == true) {
-      await FirebaseFirestore.instance.collection('categories').doc(docId).delete();
+      await FirebaseFirestore.instance
+          .collection('categories')
+          .doc(docId)
+          .delete();
     }
   }
 
@@ -374,7 +404,8 @@ class _CategoriesAdmin extends StatelessWidget {
             stream: cats,
             builder: (_, snap) {
               if (snap.connectionState == ConnectionState.waiting) {
-                return const Center(child: CircularProgressIndicator(strokeWidth: 1.5));
+                return const Center(
+                    child: CircularProgressIndicator(strokeWidth: 1.5));
               }
               final docs = snap.data?.docs ?? const [];
               if (docs.isEmpty) {
@@ -407,20 +438,27 @@ class _CategoriesAdmin extends StatelessWidget {
                           ),
                         ),
                       ),
-                      title: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
-                      subtitle: Text(code, style: const TextStyle(color: Colors.black54)),
+                      title: Text(
+                        label,
+                        style: const TextStyle(
+                            fontWeight: FontWeight.w700),
+                      ),
+                      subtitle:
+                      Text(code, style: const TextStyle(color: Colors.black54)),
                       trailing: Wrap(
                         spacing: 4,
                         children: [
                           IconButton(
                             tooltip: '수정',
-                            onPressed: () => _openEditor(context, docId: d.id, data: m),
+                            onPressed: () =>
+                                _openEditor(context, docId: d.id, data: m),
                             icon: const Icon(Icons.edit),
                           ),
                           IconButton(
                             tooltip: '삭제',
                             onPressed: () => _delete(context, d.id, label),
-                            icon: const Icon(Icons.delete, color: Colors.red),
+                            icon:
+                            const Icon(Icons.delete, color: Colors.red),
                           ),
                         ],
                       ),

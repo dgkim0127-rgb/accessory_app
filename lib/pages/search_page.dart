@@ -1,11 +1,13 @@
 // lib/pages/search_page.dart
 import 'dart:async';
 import 'dart:math';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+
 import '../widgets/post_overlay.dart';
 
 class _SearchCache {
@@ -20,7 +22,7 @@ class SearchPage extends StatefulWidget {
 
 class _SearchPageState extends State<SearchPage>
     with AutomaticKeepAliveClientMixin, TickerProviderStateMixin {
-  final _ctrl = TextEditingController();
+  final TextEditingController _ctrl = TextEditingController();
 
   List<String> _recent = [];
   String _q = '';
@@ -36,6 +38,11 @@ class _SearchPageState extends State<SearchPage>
   late final Animation<Offset> _slide;
 
   StreamSubscription<User?>? _authSub;
+
+  // ---------- 필터 상태 ----------
+  bool _filterOpen = false;
+  String? _selectedBrandKor; // null → 전체
+  String? _selectedCategoryCode; // null → 전체
 
   @override
   bool get wantKeepAlive => true;
@@ -63,10 +70,17 @@ class _SearchPageState extends State<SearchPage>
       curve: Curves.elasticOut,
       reverseCurve: Curves.easeInCubic,
     );
-    _size  = curved;
-    _fade  = CurvedAnimation(parent: _dropCtrl, curve: const Interval(0.0, 0.7, curve: Curves.easeOutCubic));
-    _slide = Tween<Offset>(begin: const Offset(0, -0.04), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _dropCtrl, curve: Curves.easeOutCubic));
+    _size = curved;
+    _fade = CurvedAnimation(
+      parent: _dropCtrl,
+      curve: const Interval(0.0, 0.7, curve: Curves.easeOutCubic),
+    );
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -0.04),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(parent: _dropCtrl, curve: Curves.easeOutCubic),
+    );
 
     _loadRecent();
     _loadLastQuery();
@@ -184,12 +198,93 @@ class _SearchPageState extends State<SearchPage>
     return true;
   }
 
+  // ---------- 필터 패널 UI ----------
+  Widget _buildFilterSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        InkWell(
+          onTap: () {
+            setState(() => _filterOpen = !_filterOpen);
+          },
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(2, 16, 2, 4),
+            child: Row(
+              children: [
+                const Text(
+                  '필터 검색',
+                  style: TextStyle(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(width: 6),
+                AnimatedRotation(
+                  turns: _filterOpen ? 0.5 : 0.0,
+                  duration: const Duration(milliseconds: 200),
+                  child: const Icon(
+                    Icons.expand_more,
+                    size: 20,
+                    color: Colors.black87,
+                  ),
+                ),
+                const Spacer(),
+                if (_selectedBrandKor != null ||
+                    _selectedCategoryCode != null)
+                  TextButton(
+                    onPressed: () {
+                      setState(() {
+                        _selectedBrandKor = null;
+                        _selectedCategoryCode = null;
+                      });
+                    },
+                    child: const Text(
+                      '초기화',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        AnimatedSize(
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          child: _filterOpen
+              ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _BrandFilterLine(
+                selectedBrandKor: _selectedBrandKor,
+                onSelected: (kor) {
+                  setState(() => _selectedBrandKor = kor);
+                },
+              ),
+              const SizedBox(height: 6),
+              _CategoryFilterLine(
+                selectedCategoryCode: _selectedCategoryCode,
+                onSelected: (code) {
+                  setState(() => _selectedCategoryCode = code);
+                },
+              ),
+            ],
+          )
+              : const SizedBox.shrink(),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
 
     final maxBarWidth = 500.0;
-    final barWidth = min(MediaQuery.of(context).size.width - 32, maxBarWidth);
+    final barWidth =
+    min(MediaQuery.of(context).size.width - 32, maxBarWidth);
 
     const double kTopPadding = 12;
     const double kSearchHeight = 48;
@@ -241,8 +336,11 @@ class _SearchPageState extends State<SearchPage>
                   onPressed: _submit,
                   style: FilledButton.styleFrom(
                     backgroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(50)),
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(50),
+                    ),
+                    padding:
+                    const EdgeInsets.symmetric(horizontal: 16),
                     minimumSize: const Size(0, 36),
                   ),
                   child: const Text('검색'),
@@ -256,23 +354,50 @@ class _SearchPageState extends State<SearchPage>
 
     final bodyBelow = ListView(
       physics: const AlwaysScrollableScrollPhysics(),
-      padding: EdgeInsets.only(top: kTopPadding + 8, left: 16, right: 16, bottom: 20),
+      padding: EdgeInsets.only(
+        top: kTopPadding + 8,
+        bottom: 20,
+      ),
       children: [
         const SizedBox(height: 40),
-        const Padding(
-          padding: EdgeInsets.only(left: 2, bottom: 8),
-          child: Text('인기 검색어', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 16)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Padding(
+                padding: EdgeInsets.only(left: 2, bottom: 8),
+                child: Text(
+                  '인기 검색어',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w800,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+              _PopularSearchTop5(onPick: (word) {
+                _ctrl.text = word;
+                _ctrl.selection =
+                    TextSelection.collapsed(offset: word.length);
+                _submit(word);
+              }),
+              _buildFilterSection(),
+            ],
+          ),
         ),
-        _PopularSearchTop5(onPick: (word) {
-          _ctrl.text = word;
-          _ctrl.selection = TextSelection.collapsed(offset: word.length);
-          _submit(word);
-        }),
-        const SizedBox(height: 20),
+        const SizedBox(height: 8),
         if (_q.isEmpty)
-          _RandomExploreGrid(forceLoading: _refreshing)
+          _RandomExploreGrid(
+            forceLoading: _refreshing,
+            brandFilterKor: _selectedBrandKor,
+            categoryFilterCode: _selectedCategoryCode,
+          )
         else
-          _SearchResultGrid(query: _q),
+          _SearchResultGrid(
+            query: _q,
+            brandFilterKor: _selectedBrandKor,
+            categoryFilterCode: _selectedCategoryCode,
+          ),
       ],
     );
 
@@ -281,7 +406,8 @@ class _SearchPageState extends State<SearchPage>
     final double targetHeight = visible * itemHeight + 6;
     const double maxHeight = 160;
 
-    final recentDropdown = (_showRecent && _recent.isNotEmpty)
+    final recentDropdown =
+    (_showRecent && _recent.isNotEmpty)
         ? CompositedTransformFollower(
       link: _anchor,
       showWhenUnlinked: false,
@@ -296,25 +422,36 @@ class _SearchPageState extends State<SearchPage>
             child: Material(
               color: Colors.transparent,
               child: ConstrainedBox(
-                constraints: BoxConstraints(maxWidth: barWidth, maxHeight: maxHeight),
+                constraints: BoxConstraints(
+                  maxWidth: barWidth,
+                  maxHeight: maxHeight,
+                ),
                 child: Container(
                   width: barWidth,
-                  height: min(targetHeight, maxHeight),
+                  height:
+                  min(targetHeight, maxHeight.toDouble()),
                   decoration: BoxDecoration(
                     color: Colors.white,
-                    borderRadius: const BorderRadius.vertical(bottom: Radius.circular(16)),
+                    borderRadius:
+                    const BorderRadius.vertical(
+                        bottom: Radius.circular(16)),
                     boxShadow: [
                       BoxShadow(
-                        color: Colors.black.withOpacity(0.18),
+                        color:
+                        Colors.black.withOpacity(0.18),
                         blurRadius: 14,
                         offset: const Offset(0, 8),
                       ),
                     ],
-                    border: Border.all(color: const Color(0xffe9e9e9)),
+                    border: Border.all(
+                      color: const Color(0xffe9e9e9),
+                    ),
                   ),
                   child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(vertical: 3),
-                    physics: const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(
+                        vertical: 3),
+                    physics:
+                    const BouncingScrollPhysics(),
                     itemCount: visible,
                     itemBuilder: (_, i) {
                       final e = _recent[i];
@@ -323,26 +460,44 @@ class _SearchPageState extends State<SearchPage>
                         child: InkWell(
                           onTap: () => _submit(e),
                           child: Padding(
-                            padding: const EdgeInsets.symmetric(horizontal: 12),
+                            padding:
+                            const EdgeInsets.symmetric(
+                                horizontal: 12),
                             child: Row(
                               children: [
-                                const Icon(Icons.history, size: 16, color: Colors.black45),
+                                const Icon(
+                                  Icons.history,
+                                  size: 16,
+                                  color: Colors.black45,
+                                ),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Text(
                                     e,
                                     maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: const TextStyle(fontSize: 14.5, color: Colors.black87),
+                                    overflow:
+                                    TextOverflow.ellipsis,
+                                    style: const TextStyle(
+                                      fontSize: 14.5,
+                                      color:
+                                      Colors.black87,
+                                    ),
                                   ),
                                 ),
                                 IconButton(
-                                  icon: const Icon(Icons.close, size: 16),
+                                  icon: const Icon(
+                                    Icons.close,
+                                    size: 16,
+                                  ),
                                   splashRadius: 16,
                                   onPressed: () async {
-                                    setState(() => _recent.remove(e));
+                                    setState(() =>
+                                        _recent.remove(
+                                            e));
                                     await _saveRecent();
-                                    if (_recent.isEmpty) _closeRecentOverlay();
+                                    if (_recent.isEmpty) {
+                                      _closeRecentOverlay();
+                                    }
                                   },
                                 ),
                               ],
@@ -383,11 +538,19 @@ class _SearchPageState extends State<SearchPage>
                 onRefresh: _onRefresh,
                 child: bodyBelow,
               ),
-              Positioned(top: kTopPadding, left: 16, right: 16, child: searchBar),
+              Positioned(
+                top: kTopPadding,
+                left: 16,
+                right: 16,
+                child: searchBar,
+              ),
               dismissLayer,
               Positioned(
                 top: kTopPadding,
-                left: (MediaQuery.of(context).size.width - barWidth) / 2 + 16 - 16,
+                left: (MediaQuery.of(context).size.width - barWidth) /
+                    2 +
+                    16 -
+                    16,
                 child: recentDropdown,
               ),
             ],
@@ -398,7 +561,200 @@ class _SearchPageState extends State<SearchPage>
   }
 }
 
-/// 인기 검색어 TOP5
+/* ---------------------- 필터 라인 ---------------------- */
+
+class _FilterTextItem extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _FilterTextItem({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 14,
+            fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
+            color: selected ? Colors.black : Colors.black54,
+            decoration: selected ? TextDecoration.underline : null,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _BrandFilterLine extends StatelessWidget {
+  final String? selectedBrandKor;
+  final ValueChanged<String?> onSelected;
+
+  const _BrandFilterLine({
+    required this.selectedBrandKor,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('brands')
+          .orderBy('rank')
+          .limit(30)
+          .snapshots(),
+      builder: (context, snap) {
+        final chips = <Widget>[];
+
+        chips.add(
+          _FilterTextItem(
+            label: '전체',
+            selected: selectedBrandKor == null,
+            onTap: () => onSelected(null),
+          ),
+        );
+
+        if (snap.hasData) {
+          final docs = snap.data!.docs;
+          final items = docs
+              .map((d) {
+            final m = d.data();
+            final kor = (m['nameKor'] ?? '').toString().trim();
+            final rank = (m['rank'] is int)
+                ? m['rank'] as int
+                : 1000000000;
+            return MapEntry(rank, kor);
+          })
+              .where((e) => e.value.isNotEmpty)
+              .toList()
+            ..sort((a, b) => a.key != b.key
+                ? a.key.compareTo(b.key)
+                : a.value.compareTo(b.value));
+
+          for (final e in items) {
+            final kor = e.value;
+            chips.add(
+              _FilterTextItem(
+                label: kor,
+                selected: selectedBrandKor == kor,
+                onTap: () =>
+                    onSelected(selectedBrandKor == kor ? null : kor),
+              ),
+            );
+          }
+        }
+
+        final withDivider = <Widget>[];
+        for (var i = 0; i < chips.length; i++) {
+          if (i > 0) {
+            withDivider.add(const Text(
+              '  |  ',
+              style: TextStyle(
+                fontSize: 13,
+                color: Colors.black26,
+              ),
+            ));
+          }
+          withDivider.add(chips[i]);
+        }
+
+        return SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: [
+              const Text(
+                '브랜드 ',
+                style: TextStyle(
+                  fontSize: 13,
+                  color: Colors.black54,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              ...withDivider,
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _CategoryFilterLine extends StatelessWidget {
+  final String? selectedCategoryCode;
+  final ValueChanged<String?> onSelected;
+
+  const _CategoryFilterLine({
+    required this.selectedCategoryCode,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    const labels = <String?, String>{
+      null: '전체',
+      'ring': '반지',
+      'necklace': '목걸이',
+      'bracelet': '팔찌',
+      'earring': '귀걸이',
+      'acc': '기타',
+    };
+
+    final chips = <Widget>[];
+    labels.forEach((code, label) {
+      final selected = selectedCategoryCode == code;
+      chips.add(
+        _FilterTextItem(
+          label: label,
+          selected: selected,
+          onTap: () => onSelected(selected ? null : code),
+        ),
+      );
+    });
+
+    final withDivider = <Widget>[];
+    for (var i = 0; i < chips.length; i++) {
+      if (i > 0) {
+        withDivider.add(const Text(
+          '  |  ',
+          style: TextStyle(
+            fontSize: 13,
+            color: Colors.black26,
+          ),
+        ));
+      }
+      withDivider.add(chips[i]);
+    }
+
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          const Text(
+            '카테고리 ',
+            style: TextStyle(
+              fontSize: 13,
+              color: Colors.black54,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          ...withDivider,
+        ],
+      ),
+    );
+  }
+}
+
+/* ---------------------- 인기 검색어 TOP5 ---------------------- */
+
 class _PopularSearchTop5 extends StatelessWidget {
   final void Function(String word)? onPick;
   const _PopularSearchTop5({this.onPick});
@@ -423,7 +779,8 @@ class _PopularSearchTop5 extends StatelessWidget {
             counts[q] = (counts[q] ?? 0) + 1;
           }
           final sorted = counts.keys.toList()
-            ..sort((a, b) => (counts[b]!).compareTo(counts[a]!));
+            ..sort((a, b) =>
+                (counts[b]!).compareTo(counts[a]!));
           top5 = sorted.take(5).toList();
         }
         if (top5.isEmpty) top5 = fallback;
@@ -438,12 +795,24 @@ class _PopularSearchTop5 extends StatelessWidget {
                 child: OutlinedButton(
                   style: OutlinedButton.styleFrom(
                     minimumSize: const Size(0, 34),
-                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                    side: const BorderSide(color: Color(0xffd0d0d0)),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 6,
+                    ),
+                    side: const BorderSide(
+                      color: Color(0xffd0d0d0),
+                    ),
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16),
+                    ),
                   ),
                   onPressed: () => onPick?.call(top5[i]),
-                  child: Text(label, style: const TextStyle(fontWeight: FontWeight.w700)),
+                  child: Text(
+                    label,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
                 ),
               );
             }),
@@ -454,17 +823,27 @@ class _PopularSearchTop5 extends StatelessWidget {
   }
 }
 
-/// 랜덤(캐시 유지) 그리드
+/* ---------------------- 랜덤(캐시 유지) 그리드 ---------------------- */
+
 class _RandomExploreGrid extends StatelessWidget {
   final bool forceLoading;
-  const _RandomExploreGrid({this.forceLoading = false});
+  final String? brandFilterKor;
+  final String? categoryFilterCode;
+
+  const _RandomExploreGrid({
+    this.forceLoading = false,
+    this.brandFilterKor,
+    this.categoryFilterCode,
+  });
 
   @override
   Widget build(BuildContext context) {
     if (forceLoading) {
       return const SizedBox(
         height: 220,
-        child: Center(child: CircularProgressIndicator()),
+        child: Center(
+          child: CircularProgressIndicator(),
+        ),
       );
     }
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
@@ -478,15 +857,45 @@ class _RandomExploreGrid extends StatelessWidget {
         final docs = snap.data!.docs;
 
         _SearchCache.shuffledIds ??= () {
-          final ids = docs.map((d) => d.id).toList()..shuffle(Random());
+          final ids = docs.map((d) => d.id).toList()
+            ..shuffle(Random());
           return ids;
         }();
 
         final byId = {for (final d in docs) d.id: d};
-        final inOrder = _SearchCache.shuffledIds!
+        var inOrder = _SearchCache.shuffledIds!
             .map((id) => byId[id])
-            .whereType<QueryDocumentSnapshot<Map<String, dynamic>>>()
+            .whereType<
+            QueryDocumentSnapshot<Map<String, dynamic>>>()
             .toList();
+
+        inOrder = inOrder.where((d) {
+          final m = d.data();
+          if (brandFilterKor != null &&
+              brandFilterKor!.isNotEmpty &&
+              (m['brand'] ?? '').toString() != brandFilterKor) {
+            return false;
+          }
+          if (categoryFilterCode != null &&
+              categoryFilterCode!.isNotEmpty &&
+              (m['category'] ?? '').toString() !=
+                  categoryFilterCode) {
+            return false;
+          }
+          return true;
+        }).toList();
+
+        if (inOrder.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.only(top: 40.0),
+            child: Center(
+              child: Text(
+                '조건에 맞는 게시물이 없습니다.',
+                style: TextStyle(color: Colors.black54),
+              ),
+            ),
+          );
+        }
 
         return _PostGrid(docs: inOrder);
       },
@@ -496,28 +905,29 @@ class _RandomExploreGrid extends StatelessWidget {
 
 /* ---------------------- 카테고리/브랜드 인식 검색 ---------------------- */
 
-/// 카테고리 키워드 → 카테고리 코드 매핑
 const Map<String, List<String>> _kCatKeywords = {
-  'ring':      ['반지', '링', 'ring'],
-  'necklace':  ['목걸이', '넥클리스', 'necklace', 'chain'],
-  'bracelet':  ['팔찌', '브레이슬릿', 'bangle', 'bracelet'],
-  'earring':   ['귀걸이', '이어링', 'earring'],
-  'acc':       ['기타', '액세서리', '악세사리', 'accessory', 'acc'],
+  'ring': ['반지', '링', 'ring'],
+  'necklace': ['목걸이', '넥클리스', 'necklace', 'chain'],
+  'bracelet': ['팔찌', '브레이슬릿', 'bangle', 'bracelet'],
+  'earring': ['귀걸이', '이어링', 'earring'],
+  'acc': ['기타', '액세서리', '악세사리', 'accessory', 'acc'],
 };
 
-/// 검색어를 토큰으로 쪼개고(공백 기준) 카테고리 코드와 일반키워드 세트로 분리
 class _ParsedQuery {
   final Set<String> catCodes;
-  final Set<String> tokens; // 일반 텍스트 토큰
+  final Set<String> tokens;
   _ParsedQuery(this.catCodes, this.tokens);
 }
 
 _ParsedQuery _parseQuery(String q) {
   final lower = q.toLowerCase().trim();
-  final rawTokens = lower.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
+  final rawTokens = lower
+      .split(RegExp(r'\s+'))
+      .where((e) => e.isNotEmpty)
+      .toList();
 
   final catCodes = <String>{};
-  final others   = <String>{};
+  final others = <String>{};
 
   for (final t in rawTokens) {
     bool matchedCat = false;
@@ -532,30 +942,46 @@ _ParsedQuery _parseQuery(String q) {
   return _ParsedQuery(catCodes, others);
 }
 
-/// 검색 결과 그리드
 class _SearchResultGrid extends StatelessWidget {
   final String query;
-  const _SearchResultGrid({required this.query});
+  final String? brandFilterKor;
+  final String? categoryFilterCode;
+
+  const _SearchResultGrid({
+    required this.query,
+    this.brandFilterKor,
+    this.categoryFilterCode,
+  });
 
   bool _textHit(Map<String, dynamic> m, String token) {
     final t = token.toLowerCase();
-    return (m['title'] ?? '').toString().toLowerCase().contains(t) ||
-        (m['description'] ?? '').toString().toLowerCase().contains(t) ||
-        (m['brand'] ?? '').toString().toLowerCase().contains(t) ||
-        (m['brandEng'] ?? '').toString().toLowerCase().contains(t);
+    return (m['title'] ?? '')
+        .toString()
+        .toLowerCase()
+        .contains(t) ||
+        (m['description'] ?? '')
+            .toString()
+            .toLowerCase()
+            .contains(t) ||
+        (m['brand'] ?? '')
+            .toString()
+            .toLowerCase()
+            .contains(t) ||
+        (m['brandEng'] ?? '')
+            .toString()
+            .toLowerCase()
+            .contains(t);
   }
 
   bool _match(Map<String, dynamic> m, _ParsedQuery pq) {
     final cat = (m['category'] ?? '').toString().toLowerCase();
 
-    // 1) 카테고리 지정이 있으면: 카테고리 일치 OR (나머지 토큰이 있으면 그 토큰도 모두 AND 매칭)
     if (pq.catCodes.isNotEmpty) {
       final catOk = pq.catCodes.contains(cat);
       final textOk = pq.tokens.every((t) => _textHit(m, t));
       return catOk && textOk;
     }
 
-    // 2) 카테고리 지정이 없으면: 모든 토큰 AND 매칭
     if (pq.tokens.isEmpty) return true;
     return pq.tokens.every((t) => _textHit(m, t));
   }
@@ -568,14 +994,37 @@ class _SearchResultGrid extends StatelessWidget {
       stream: FirebaseFirestore.instance
           .collection('posts')
           .orderBy('createdAt', descending: true)
-          .limit(20)
+          .limit(60)
           .snapshots(),
       builder: (context, snap) {
         if (!snap.hasData) return const SizedBox();
-        final filtered = snap.data!.docs.where((d) => _match(d.data(), parsed)).toList();
+        var filtered = snap.data!.docs.where((d) {
+          final m = d.data();
+          if (!_match(m, parsed)) return false;
+
+          if (brandFilterKor != null &&
+              brandFilterKor!.isNotEmpty &&
+              (m['brand'] ?? '').toString() != brandFilterKor) {
+            return false;
+          }
+          if (categoryFilterCode != null &&
+              categoryFilterCode!.isNotEmpty &&
+              (m['category'] ?? '').toString() !=
+                  categoryFilterCode) {
+            return false;
+          }
+          return true;
+        }).toList();
+
         if (filtered.isEmpty) {
-          return const Center(
-            child: Text('검색 결과가 없습니다.', style: TextStyle(color: Colors.black54)),
+          return const Padding(
+            padding: EdgeInsets.only(top: 40.0),
+            child: Center(
+              child: Text(
+                '검색 결과가 없습니다.',
+                style: TextStyle(color: Colors.black54),
+              ),
+            ),
           );
         }
         return _PostGrid(docs: filtered);
@@ -593,24 +1042,48 @@ class _PostGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GridView.builder(
-      padding: const EdgeInsets.only(top: 8),
+      padding: EdgeInsets.zero,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+      gridDelegate:
+      const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 3,
-        mainAxisSpacing: 3,
-        crossAxisSpacing: 3,
+        mainAxisSpacing: 0,
+        crossAxisSpacing: 0,
       ),
       itemCount: docs.length,
       itemBuilder: (ctx, i) {
-        final img = (docs[i]['imageUrl'] ?? '').toString();
+        final m = docs[i].data();
+        final img = (m['thumbUrl'] ??
+            m['mediumUrl'] ??
+            m['imageUrl'] ??
+            '')
+            .toString();
         return GestureDetector(
-          onTap: () => PostOverlay.show(ctx, docs: docs, startIndex: i),
+          onTap: () =>
+              PostOverlay.show(ctx, docs: docs, startIndex: i),
           child: _ProgressImage(url: img),
         );
       },
     );
   }
+}
+
+String _optimizeGridImageUrl(String url) {
+  if (url.isEmpty) return url;
+  const marker = '/upload/';
+  final idx = url.indexOf(marker);
+  if (idx == -1) return url;
+  final before = url.substring(0, idx + marker.length);
+  final after = url.substring(idx + marker.length);
+
+  if (after.startsWith('f_auto') || after.startsWith('q_auto')) {
+    return url;
+  }
+
+  return '$before'
+      'f_auto,q_auto:eco,w_720/'
+      '$after';
 }
 
 class _ProgressImage extends StatelessWidget {
@@ -619,43 +1092,48 @@ class _ProgressImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Image.network(
-          url,
-          fit: BoxFit.cover,
-          loadingBuilder: (context, child, loadingProgress) {
-            if (loadingProgress == null) return child;
-            final total = loadingProgress.expectedTotalBytes;
-            final loaded = loadingProgress.cumulativeBytesLoaded;
-            final percent = (total != null && total > 0) ? (loaded / total) : null;
-            return Container(
-              color: const Color(0xfff5f5f5),
-              child: Center(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    const SizedBox(width: 26, height: 26, child: CircularProgressIndicator(strokeWidth: 2)),
-                    const SizedBox(height: 8),
-                    Text(
-                      percent == null ? '로딩중...' : '${(percent * 100).clamp(0, 100).toStringAsFixed(0)}%',
-                      style: const TextStyle(fontSize: 12, color: Colors.black54, fontWeight: FontWeight.w600),
-                    ),
-                  ],
+    final realUrl = _optimizeGridImageUrl(url);
+
+    return Image.network(
+      realUrl,
+      fit: BoxFit.cover,
+      loadingBuilder: (context, child, loadingProgress) {
+        if (loadingProgress == null) return child;
+        final total = loadingProgress.expectedTotalBytes;
+        final loaded = loadingProgress.cumulativeBytesLoaded;
+        final percent =
+        (total != null && total > 0) ? (loaded / total) : null;
+        return Container(
+          color: const Color(0xfff5f5f5),
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 26,
+                  height: 26,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                  ),
                 ),
-              ),
-            );
-          },
-          errorBuilder: (_, __, ___) => Container(color: Colors.grey[200]),
-        ),
-        IgnorePointer(
-          ignoring: true,
-          child: Container(
-            decoration: BoxDecoration(border: Border.all(color: const Color(0xfff0f0f0), width: 0.5)),
+                const SizedBox(height: 8),
+                Text(
+                  percent == null
+                      ? '로딩중...'
+                      : '${(percent * 100).clamp(0, 100).toStringAsFixed(0)}%',
+                  style: const TextStyle(
+                    fontSize: 12,
+                    color: Colors.black54,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-      ],
+        );
+      },
+      errorBuilder: (_, __, ___) =>
+          Container(color: Colors.grey[200]),
     );
   }
 }
@@ -663,6 +1141,9 @@ class _ProgressImage extends StatelessWidget {
 class _DragEverywhere extends MaterialScrollBehavior {
   const _DragEverywhere();
   @override
-  Set<PointerDeviceKind> get dragDevices =>
-      {PointerDeviceKind.touch, PointerDeviceKind.mouse, PointerDeviceKind.trackpad};
+  Set<PointerDeviceKind> get dragDevices => {
+    PointerDeviceKind.touch,
+    PointerDeviceKind.mouse,
+    PointerDeviceKind.trackpad,
+  };
 }

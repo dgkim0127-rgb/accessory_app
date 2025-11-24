@@ -1,4 +1,8 @@
-// lib/admin/admin_users_page.dart
+// lib/admin/admin_users_page.dart  ✅ 최종 (A안: Functions 기반 고급 회원 관리)
+// - superCreateUser가 Auth + users 문서 생성
+// - 여기서 users/<uid> 문서에 plainPassword 필드를 직접 저장해서 목록에서 그대로 보여줌
+// - 회원 추가 시 비밀번호 입력은 가리지 않음(그냥 TextField)
+
 import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
@@ -146,11 +150,23 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
     final role = _roleValue; // user/admin/super
 
     try {
+      // 1) Cloud Functions로 Auth + 기본 users 문서 생성
       final data = await Fx.callWithFallback<Map<String, dynamic>>(
         'superCreateUser',
         data: {'email': email, 'password': pw, 'role': role},
       );
       final uid = (data['uid'] ?? '').toString();
+
+      // 2) 여기서 users/<uid> 문서에 plainPassword 필드 직접 저장 (merge)
+      try {
+        await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .set({'plainPassword': pw}, SetOptions(merge: true));
+      } catch (e) {
+        // 저장 실패해도 회원 생성 자체는 유지
+        debugPrint('plainPassword 저장 실패: $e');
+      }
 
       _stopButtonProgress(success: true);
 
@@ -483,11 +499,12 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
                   ),
                   const SizedBox(height: 16),
 
+                  // 비밀번호: 가리지 않음
                   _ReverseFloatField(
                     controller: _pwCtrl,
                     focusNode: _pwFocus,
                     label: '비밀번호',
-                    obscure: true,
+                    obscure: false,
                   ),
                   const SizedBox(height: 16),
 
@@ -551,6 +568,9 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
                     final isMe = (me?.uid == d.id);
                     final highlight = (d.id == _justAddedUid);
 
+                    // plainPassword 필드 읽기
+                    final plainPw = (data['plainPassword'] ?? '').toString();
+
                     return AnimatedContainer(
                       duration: const Duration(milliseconds: 380),
                       curve: Curves.easeOutCubic,
@@ -572,9 +592,24 @@ class _AdminUsersPageState extends State<AdminUsersPage> {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(displayName),
-                                  Text(email,
-                                      style: const TextStyle(
-                                          fontSize: 12, color: Colors.black54)),
+                                  Text(
+                                    email,
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black54,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    plainPw.isEmpty
+                                        ? 'PW: (저장된 비밀번호 없음)'
+                                        : 'PW: $plainPw',
+                                    style: const TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.black87,
+                                      fontWeight: FontWeight.w500,
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),

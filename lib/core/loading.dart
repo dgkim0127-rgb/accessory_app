@@ -38,10 +38,14 @@ class LoadingOverlay {
   /// ✅ 중복 떠있을 수 있는 모든 HUD를 강제 닫기
   static void hideAny() {
     if (_entry != null) {
-      try { _entry!.remove(); } catch (_) {}
+      try {
+        _entry!.remove();
+      } catch (_) {}
       _entry = null;
     }
-    try { _controller?.dispose(); } catch (_) {}
+    try {
+      _controller?.dispose();
+    } catch (_) {}
     _controller = null;
   }
 
@@ -61,7 +65,8 @@ class LoadingOverlay {
       controller.setThumb(imageUrl: thumbUrl, text: thumbText);
     }
 
-    final entry = OverlayEntry(builder: (_) => _LoadingHUD(controller: controller));
+    final entry =
+    OverlayEntry(builder: (_) => _LoadingHUD(controller: controller));
     Overlay.of(context, rootOverlay: true).insert(entry);
 
     _entry = entry;
@@ -69,11 +74,12 @@ class LoadingOverlay {
     return controller;
   }
 
-  /// HUD 닫기 (권장)
+  /// HUD 닫기
   static Future<void> hide(BuildContext context, LoadingController c) async {
-    // 지정한 HUD만 닫기 시도
     if (_entry != null) {
-      try { _entry!.remove(); } catch (_) {}
+      try {
+        _entry!.remove();
+      } catch (_) {}
       _entry = null;
     }
     await c.dispose();
@@ -87,6 +93,7 @@ class LoadingOverlay {
   static void setPreview(List<String> urls, {String? caption}) {
     _preview = _PreviewData(urls, caption: caption);
   }
+
   static _PreviewData? consumePreview() {
     final p = _preview;
     _preview = null;
@@ -114,24 +121,29 @@ class _LoadingHUD extends StatefulWidget {
 }
 
 class _LoadingHUDState extends State<_LoadingHUD> {
-  final _page = PageController();
-  Timer? _timer;
+  static const double _kAutoHideThreshold = 0.40; // 40% 이상이면 자동 숨김
+
+  final PageController _page = PageController();
+  Timer? _slideTimer;
+  Timer? _progressTimer;
+
   List<_Thumb> _slides = const [];
   _Thumb? _externalThumb;
   String _label = '처리 중…';
-  double _progress = 0;
+
+  // 🔢 목표(progressStream에서 온 값)와 실제로 화면에 보여주는 값 분리
+  double _targetProgress = 0.0;
+  double _displayProgress = 0.0; // 0.0 ~ 1.0
 
   @override
   void initState() {
     super.initState();
     widget.controller.progressStream.listen((v) {
       if (!mounted) return;
-      setState(() => _progress = v);
-      // ✅ 100% 가까우면 자동으로 닫히도록(혹시 finally가 못 불릴 때 대비)
-      if (v >= 0.999) {
-        // microtask로 살짝 늦춰서 닫기
-        Future.microtask(() => LoadingOverlay.hideAny());
-      }
+      setState(() {
+        _targetProgress = v.clamp(0.0, 1.0);
+      });
+      _startProgressAnimation();
     });
     widget.controller.labelStream.listen((s) {
       if (!mounted) return;
@@ -148,14 +160,15 @@ class _LoadingHUDState extends State<_LoadingHUD> {
 
   @override
   void dispose() {
-    _timer?.cancel();
+    _slideTimer?.cancel();
+    _progressTimer?.cancel();
     _page.dispose();
     super.dispose();
   }
 
   void _startAutoSlide() {
-    _timer?.cancel();
-    _timer = Timer.periodic(const Duration(seconds: 3), (_) {
+    _slideTimer?.cancel();
+    _slideTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (!mounted || _slides.isEmpty) return;
       final raw = _page.hasClients ? (_page.page ?? 0).round() : 0;
       final next = (raw + 1) % _slides.length;
@@ -167,6 +180,47 @@ class _LoadingHUDState extends State<_LoadingHUD> {
         );
       }
     });
+  }
+
+  /// 진행률을 1%씩 부드럽게 움직여주는 타이머
+  void _startProgressAnimation() {
+    _progressTimer ??=
+        Timer.periodic(const Duration(milliseconds: 25), (timer) {
+          if (!mounted) {
+            timer.cancel();
+            _progressTimer = null;
+            return;
+          }
+
+          if (_displayProgress == _targetProgress) {
+            // 목표에 도달했으면 100%일 때 자동 닫기(백업용)
+            if (_displayProgress >= 0.999) {
+              Future.microtask(() => LoadingOverlay.hideAny());
+            }
+            timer.cancel();
+            _progressTimer = null;
+            return;
+          }
+
+          setState(() {
+            const step = 0.01; // 1%
+            if (_displayProgress < _targetProgress) {
+              _displayProgress =
+                  (_displayProgress + step).clamp(0.0, _targetProgress);
+            } else {
+              _displayProgress =
+                  (_displayProgress - step).clamp(_targetProgress, 1.0);
+            }
+
+            // 🔥 40% 이상 도달하면 HUD 자체를 숨겨서
+            //     메인 화면이랑 안 겹치도록 처리
+            if (_displayProgress >= _kAutoHideThreshold) {
+              Future.microtask(() => LoadingOverlay.hideAny());
+              timer.cancel();
+              _progressTimer = null;
+            }
+          });
+        });
   }
 
   Future<void> _loadRandomSlides() async {
@@ -181,10 +235,16 @@ class _LoadingHUDState extends State<_LoadingHUD> {
       final candidates = qs.docs.map((d) {
         final m = d.data();
         final url = (m['imageUrl'] ??
-            ((m['images'] is List && m['images'].isNotEmpty) ? m['images'][0] : ''))
+            ((m['images'] is List && m['images'].isNotEmpty)
+                ? m['images'][0]
+                : ''))
             .toString();
-        final txt = (m['title'] ?? m['description'] ?? '').toString();
-        return _Thumb(imageUrl: url.isEmpty ? null : url, text: txt);
+        final txt =
+        (m['title'] ?? m['description'] ?? '').toString();
+        return _Thumb(
+          imageUrl: url.isEmpty ? null : url,
+          text: txt,
+        );
       }).where((t) => (t.imageUrl ?? '').isNotEmpty).toList();
 
       candidates.shuffle(rng);
@@ -193,7 +253,7 @@ class _LoadingHUDState extends State<_LoadingHUD> {
       // 홈에서 다시 쓸 수 있도록 프리뷰 저장
       LoadingOverlay.setPreview(
         pick.map((e) => e.imageUrl!).toList(),
-        caption: pick.first.text,
+        caption: pick.isNotEmpty ? pick.first.text : null,
       );
 
       if (!mounted) return;
@@ -207,83 +267,98 @@ class _LoadingHUDState extends State<_LoadingHUD> {
     const ink = Color(0xff111111);
     final useExternal = _externalThumb?.imageUrl != null;
 
+    final percent =
+    (_displayProgress * 100).clamp(0, 100).toStringAsFixed(0);
+
     return Material(
       type: MaterialType.transparency,
-      child: Stack(
-        children: [
-          Align(
-            alignment: const Alignment(0, -0.55),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 320),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  ClipRect(
-                    child: SizedBox(
-                      width: 160,
-                      height: 160,
-                      child: useExternal
-                          ? _ThumbImage(url: _externalThumb!.imageUrl!)
-                          : (_slides.isEmpty
-                          ? const SizedBox()
-                          : PageView.builder(
-                        controller: _page,
-                        itemCount: _slides.length,
-                        itemBuilder: (_, i) =>
-                            _ThumbImage(url: _slides[i].imageUrl!),
-                      )),
+      child: AbsorbPointer( // 🔒 HUD가 떠 있는 동안 아래 터치 완전 차단
+        absorbing: true,
+        child: Stack(
+          children: [
+            Align(
+              alignment: const Alignment(0, -0.55),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 320),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    ClipRect(
+                      child: SizedBox(
+                        width: 160,
+                        height: 160,
+                        child: useExternal
+                            ? _ThumbImage(url: _externalThumb!.imageUrl!)
+                            : (_slides.isEmpty
+                            ? const SizedBox()
+                            : PageView.builder(
+                          controller: _page,
+                          itemCount: _slides.length,
+                          itemBuilder: (_, i) =>
+                              _ThumbImage(url: _slides[i].imageUrl!),
+                        )),
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    _label,
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
-                      fontSize: 14,
+                    const SizedBox(height: 10),
+                    Text(
+                      _label,
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14,
+                      ),
                     ),
-                  ),
-                  if (useExternal && (_externalThumb!.text ?? '').isNotEmpty) ...[
+                    if (useExternal &&
+                        (_externalThumb!.text ?? '').isNotEmpty) ...[
+                      const SizedBox(height: 6),
+                      Text(
+                        _externalThumb!.text!,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.black54,
+                          height: 1.3,
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+            ),
+            Align(
+              alignment: Alignment.bottomCenter,
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
+                decoration: const BoxDecoration(
+                  color: Colors.white,
+                  border: Border(top: BorderSide(color: line)),
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    LinearProgressIndicator(
+                      value:
+                      _displayProgress <= 0 ? null : _displayProgress,
+                      minHeight: 12,
+                      backgroundColor: const Color(0xFFEDEDED),
+                      color: ink,
+                    ),
                     const SizedBox(height: 6),
                     Text(
-                      _externalThumb!.text!,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      textAlign: TextAlign.center,
-                      style: const TextStyle(fontSize: 12, color: Colors.black54, height: 1.3),
+                      '$percent%',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: Colors.black54,
+                      ),
                     ),
                   ],
-                ],
+                ),
               ),
             ),
-          ),
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: Container(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 14),
-              decoration: const BoxDecoration(
-                color: Colors.white,
-                border: Border(top: BorderSide(color: line)),
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  LinearProgressIndicator(
-                    value: _progress <= 0 ? null : _progress,
-                    minHeight: 12,
-                    backgroundColor: const Color(0xFFEDEDED),
-                    color: ink,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '${(_progress * 100).clamp(0, 100).toStringAsFixed(0)}%',
-                    style: const TextStyle(fontSize: 12, color: Colors.black54),
-                  ),
-                ],
-              ),
-            ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -297,10 +372,13 @@ class _ThumbImage extends StatelessWidget {
     return Image.network(
       url,
       fit: BoxFit.cover,
-      errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image_outlined, size: 40)),
+      errorBuilder: (_, __, ___) =>
+      const Center(child: Icon(Icons.broken_image_outlined, size: 40)),
       loadingBuilder: (_, child, ev) {
         if (ev == null) return child;
-        return const Center(child: CircularProgressIndicator(strokeWidth: 1.5));
+        return const Center(
+          child: CircularProgressIndicator(strokeWidth: 1.5),
+        );
       },
     );
   }

@@ -1,10 +1,19 @@
-// lib/auth/login_page.dart ✅ 최종(토큰 강제갱신 + role 디버그 + 안전 처리)
+// lib/auth/login_page.dart ✅ 최종
+// - 토큰 강제갱신 + role 디버그 + 안전 처리
+// - 단일 로그인 가드 적용
+// - HUD가 항상 정상적으로 닫히도록 처리
+// - "로그인 정보 저장" 기능(아이디+비밀번호) 추가
+// - 아이디/비밀번호 오류 한국어 안내
+// - 아이디를 수정하면 "로그인 정보 저장" 자동 해제
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/loading.dart';
 import '../core/activity_logger.dart';
+import '../services/single_login_guard.dart'; // 🔐 단일 로그인 가드
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -20,11 +29,55 @@ class _LoginPageState extends State<LoginPage> {
   String? _error;
   bool _loading = false;
 
+  // ✅ 로그인 정보 저장 여부
+  bool _remember = false;
+
+  static const _kRememberKey = 'login_remember_v1';
+  static const _kSavedIdKey = 'login_saved_id_v1';
+  static const _kSavedPwKey = 'login_saved_pw_v1';
+
+  @override
+  void initState() {
+    super.initState();
+    _loadSavedLogin();
+  }
+
   @override
   void dispose() {
     _idCtrl.dispose();
     _pwCtrl.dispose();
     super.dispose();
+  }
+
+  /// SharedPreferences에서 저장된 로그인 정보 불러오기
+  Future<void> _loadSavedLogin() async {
+    final prefs = await SharedPreferences.getInstance();
+    final remember = prefs.getBool(_kRememberKey) ?? false;
+    final savedId = prefs.getString(_kSavedIdKey) ?? '';
+    final savedPw = prefs.getString(_kSavedPwKey) ?? '';
+    if (!mounted) return;
+
+    setState(() {
+      _remember = remember;
+      if (remember) {
+        _idCtrl.text = savedId;
+        _pwCtrl.text = savedPw;
+      }
+    });
+  }
+
+  /// 로그인 성공 후, 체크 상태에 맞게 저장/삭제
+  Future<void> _persistLoginIfNeeded() async {
+    final prefs = await SharedPreferences.getInstance();
+    if (_remember) {
+      await prefs.setBool(_kRememberKey, true);
+      await prefs.setString(_kSavedIdKey, _idCtrl.text.trim());
+      await prefs.setString(_kSavedPwKey, _pwCtrl.text);
+    } else {
+      await prefs.remove(_kRememberKey);
+      await prefs.remove(_kSavedIdKey);
+      await prefs.remove(_kSavedPwKey);
+    }
   }
 
   Future<void> _login() async {
@@ -44,57 +97,112 @@ class _LoginPageState extends State<LoginPage> {
       hud.setLabel('계정 확인 중…');
       hud.stepPercent(0.25);
 
-      // 1) 로그인
+      // 1) Firebase Auth 로그인
       final cred = await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: email,
         password: _pwCtrl.text,
       );
 
-      // 2) ✅ 사용자 리로드(아주 가끔 토큰 재발급 전에 프로필이 오래된 경우 방지)
+      // 2) 🔐 단일 로그인 락 확인
+      hud.setLabel('세션 확인 중…');
+      hud.stepPercent(0.40);
+
+      final ok = await SingleLoginGuard.instance.acquireLock();
+      if (!ok) {
+        // 👉 이미 다른 기기에서 로그인 중일 때
+        await FirebaseAuth.instance.signOut();
+
+        if (!mounted) return;
+
+        setState(() {
+          _error = '이미 다른 기기에서 로그인 중입니다.';
+        });
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('이미 다른 기기에서 로그인 중입니다.'),
+          ),
+        );
+
+        // 진행률을 100%까지 올려서 HUD가 부드럽게 닫히도록
+        hud.stepPercent(1.0, label: '세션 종료');
+
+        return; // 아래 단계(토큰/역할 동기화)는 건너뜀
+      }
+
+      // 3) ✅ 사용자 리로드
       await cred.user?.reload();
 
-      // 3) ✅ 커스텀 클레임 강제 반영: 반드시 true로!
-      //    이 한 줄이 없으면 role이 예전 값일 수 있어 권한이 계속 막힙니다.
+      // 4) ✅ 커스텀 클레임 강제 반영
       await cred.user?.getIdToken(true);
 
-      // 4) (선택) 현재 토큰의 role 디버깅
+      // 5) (선택) 현재 토큰의 role 디버깅
       final token = await cred.user?.getIdTokenResult(true);
       final claimRole = token?.claims?['role'];
       debugPrint('🔐 claims.role = $claimRole');
 
       hud.setLabel('역할 동기화…');
-      hud.stepPercent(0.6);
+      hud.stepPercent(0.60);
 
-      // 5) (보조) users/{uid}.role도 확인해서 UI 참고용으로 출력
+      // 6) (보조) users/{uid}.role 확인
       final uid = cred.user?.uid;
       if (uid != null) {
         final snap = await FirebaseFirestore.instance
             .collection('users')
             .doc(uid)
-        // 서버 원본 우선 확인 (캐시 착시 방지)
             .get(const GetOptions(source: Source.server));
-        final docRole = (snap.data()?['role'] as String?)?.toLowerCase() ?? 'user';
+        final docRole =
+            (snap.data()?['role'] as String?)?.toLowerCase() ?? 'user';
         debugPrint('📌 users/{uid}.role = $docRole');
       }
 
-      // 6) 활동 로그 (실패해도 무시)
+      // 7) 활동 로그 (실패해도 무시)
       try {
         await ActivityLogger.log('login');
       } catch (_) {}
+
+      // ✅ 로그인 성공했으니, 체크 상태에 따라 아이디/비번 저장
+      await _persistLoginIfNeeded();
 
       hud.setLabel('마무리 중…');
       hud.stepPercent(0.98);
       hud.stepPercent(1.0, label: '완료');
 
-      // 7) 로그인 성공 후 화면 전환(필요 시)
+      // 8) 로그인 성공 후 화면 전환
       if (!mounted) return;
       Navigator.of(context).maybePop();
     } on FirebaseAuthException catch (e) {
-      _error = e.message ?? '로그인 실패';
+      // 🔥 한국어 에러 처리
+      if (e.code == 'user-not-found' ||
+          e.code == 'wrong-password' ||
+          e.code == 'invalid-credential' ||
+          e.code == 'invalid-email') {
+        _error = '아이디 또는 비밀번호가 올바르지 않습니다.';
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('아이디 또는 비밀번호가 올바르지 않습니다.'),
+            ),
+          );
+        }
+      } else if (e.code == 'too-many-requests') {
+        _error = '잠시 후 다시 시도해주세요. (로그인 시도 제한)';
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('잠시 후 다시 시도해주세요. (로그인 시도 제한)'),
+            ),
+          );
+        }
+      } else {
+        _error = '로그인 실패: ${e.code}';
+      }
     } catch (e) {
       _error = '로그인 실패: $e';
     } finally {
-      await LoadingOverlay.hide(context, hud);
+      // 어떤 경우든 HUD는 여기서 확실히 닫는다.
       LoadingOverlay.hideAny();
       if (mounted) setState(() => _loading = false);
     }
@@ -113,13 +221,20 @@ class _LoginPageState extends State<LoginPage> {
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
               child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 36),
+                padding:
+                const EdgeInsets.symmetric(horizontal: 28, vertical: 36),
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(14),
                   boxShadow: const [
-                    BoxShadow(color: Color(0x14000000), offset: Offset(5, 5), blurRadius: 10),
-                    BoxShadow(color: Colors.white, offset: Offset(-5, -5), blurRadius: 10),
+                    BoxShadow(
+                        color: Color(0x14000000),
+                        offset: Offset(5, 5),
+                        blurRadius: 10),
+                    BoxShadow(
+                        color: Colors.white,
+                        offset: Offset(-5, -5),
+                        blurRadius: 10),
                   ],
                 ),
                 child: Form(
@@ -143,8 +258,17 @@ class _LoginPageState extends State<LoginPage> {
                         icon: Icons.person_outline,
                         controller: _idCtrl,
                         label: '아이디',
-                        validator: (v) =>
-                        (v == null || v.trim().isEmpty) ? '아이디를 입력하세요' : null,
+                        validator: (v) => (v == null || v.trim().isEmpty)
+                            ? '아이디를 입력하세요'
+                            : null,
+                        // 🔥 아이디를 수정하면 자동으로 "로그인 정보 저장" 해제
+                        onChanged: (_) {
+                          if (_remember) {
+                            setState(() {
+                              _remember = false;
+                            });
+                          }
+                        },
                       ),
                       const SizedBox(height: 28),
                       _UnderlineField(
@@ -157,11 +281,47 @@ class _LoginPageState extends State<LoginPage> {
                         onSubmit: (_) => _login(),
                       ),
 
+                      const SizedBox(height: 12),
+
+                      // ✅ 로그인 정보 저장 체크박스
+                      Row(
+                        children: [
+                          SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: Checkbox(
+                              value: _remember,
+                              onChanged: (v) {
+                                setState(() {
+                                  _remember = v ?? false;
+                                });
+                              },
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                              materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                          const Text(
+                            '로그인 정보 저장',
+                            style: TextStyle(fontSize: 13),
+                          ),
+                        ],
+                      ),
+
                       if (_error != null) ...[
                         const SizedBox(height: 16),
-                        Text(_error!, style: const TextStyle(color: Colors.red, fontSize: 13)),
+                        Text(
+                          _error!,
+                          style: const TextStyle(
+                            color: Colors.red,
+                            fontSize: 13,
+                          ),
+                        ),
                       ],
-                      const SizedBox(height: 32),
+                      const SizedBox(height: 24),
 
                       SizedBox(
                         width: double.infinity,
@@ -178,8 +338,12 @@ class _LoginPageState extends State<LoginPage> {
                           ),
                           child: _loading
                               ? const SizedBox(
-                            width: 20, height: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
                           )
                               : const Text(
                             '로그인',
@@ -210,6 +374,7 @@ class _UnderlineField extends StatelessWidget {
   final String? Function(String?)? validator;
   final bool obscure;
   final void Function(String)? onSubmit;
+  final void Function(String)? onChanged;
 
   const _UnderlineField({
     super.key,
@@ -219,6 +384,7 @@ class _UnderlineField extends StatelessWidget {
     this.validator,
     this.obscure = false,
     this.onSubmit,
+    this.onChanged,
   });
 
   @override
@@ -239,13 +405,17 @@ class _UnderlineField extends StatelessWidget {
             controller: controller,
             obscureText: obscure,
             onFieldSubmitted: onSubmit,
+            onChanged: onChanged,
             validator: validator,
             style: const TextStyle(color: ink, fontSize: 15),
             decoration: InputDecoration(
               labelText: label,
               labelStyle: const TextStyle(color: grey400, fontSize: 15),
-              floatingLabelStyle:
-              const TextStyle(color: ink, fontWeight: FontWeight.w600, fontSize: 13),
+              floatingLabelStyle: const TextStyle(
+                color: ink,
+                fontWeight: FontWeight.w600,
+                fontSize: 13,
+              ),
               enabledBorder: const UnderlineInputBorder(
                 borderSide: BorderSide(color: grey400, width: 1.0),
               ),

@@ -1,10 +1,19 @@
 // lib/core/announcement_popup_manager.dart
+//
+// Firestore: system/announcement 문서를 구독해서
+// 유효한 공지가 있을 때 앱 전체 위에 팝업을 띄우는 매니저.
+//
+// - disabled == true 면 표시 안 함
+// - title, body 둘 다 비어 있으면 표시 안 함
+// - revision(정수) 기준 + "오늘 하루 보지 않기" 체크 지원
+// - main.dart 에서 사용하던 forceTest 플래그 유지
+
 import 'dart:async';
-import 'package:flutter/material.dart';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// 공지 팝업 매니저 (Overlay + 오늘하루 억제 + 외부 터치 차단 + 부드러운 입/퇴장 애니메이션)
 class AnnouncementPopupManager extends StatefulWidget {
   final Widget child;
   final bool forceTest;
@@ -16,30 +25,46 @@ class AnnouncementPopupManager extends StatefulWidget {
   });
 
   @override
-  State<AnnouncementPopupManager> createState() => _AnnouncementPopupManagerState();
+  State<AnnouncementPopupManager> createState() =>
+      _AnnouncementPopupManagerState();
 }
 
 class _AnnouncementPopupManagerState extends State<AnnouncementPopupManager> {
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _sub;
   OverlayEntry? _entry;
   bool _showing = false;
 
+  static const _kSkipRevKey = 'ann.skip.rev';
+  static const _kSkipDayKey = 'ann.skip.day';
+
+  @override
+  void initState() {
+    super.initState();
+    _listenAnnouncement();
+  }
+
+  @override
+  void dispose() {
+    _sub?.cancel();
+    _hidePopup();
+    super.dispose();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('system')
-          .doc('announcement')
-          .snapshots(),
-      builder: (context, snap) {
-        if (snap.hasData && snap.data!.exists) {
-          final data = snap.data!.data() ?? {};
-          WidgetsBinding.instance.addPostFrameCallback((_) {
-            _maybeShow(data);
-          });
-        }
-        return widget.child;
-      },
-    );
+    // 팝업은 Overlay 로 따로 띄우고,
+    // 여기서는 그냥 child 만 반환
+    return widget.child;
+  }
+
+  void _listenAnnouncement() {
+    _sub = FirebaseFirestore.instance
+        .collection('system')
+        .doc('announcement')
+        .snapshots()
+        .listen(_onSnapshot, onError: (e) {
+      debugPrint('📢 announcement listen error: $e');
+    });
   }
 
   int _todayKey() {
@@ -47,177 +72,149 @@ class _AnnouncementPopupManagerState extends State<AnnouncementPopupManager> {
     return now.year * 10000 + now.month * 100 + now.day;
   }
 
-  Future<void> _maybeShow(Map<String, dynamic> data) async {
-    if (!mounted || _showing) return;
+  Future<void> _onSnapshot(
+      DocumentSnapshot<Map<String, dynamic>> snap) async {
+    if (!mounted) return;
+
+    if (!snap.exists) {
+      _hidePopup();
+      return;
+    }
+
+    final data = snap.data() ?? {};
 
     final disabled = data['disabled'] == true;
-    final title = (data['title'] ?? '').toString().trim();
-    final body  = (data['body']  ?? '').toString().trim();
-    final rev   = (data['revision'] is int) ? data['revision'] as int : 0;
+    final rawTitle = (data['title'] ?? '').toString();
+    final rawBody = (data['body'] ?? '').toString();
+    final title = rawTitle.trim();
+    final body = rawBody.trim();
+    final rev =
+    (data['revision'] is int) ? data['revision'] as int : 0;
 
-    if (disabled || (title.isEmpty && body.isEmpty) || rev <= 0) return;
+    // 기본 유효성 검사
+    if (disabled || (title.isEmpty && body.isEmpty) || rev <= 0) {
+      _hidePopup();
+      return;
+    }
 
     final prefs = await SharedPreferences.getInstance();
-    final lastSkipRev = prefs.getInt('ann.skip.rev') ?? -1;
-    final lastSkipDay = prefs.getInt('ann.skip.day') ?? -1;
+    final lastSkipRev = prefs.getInt(_kSkipRevKey) ?? -1;
+    final lastSkipDay = prefs.getInt(_kSkipDayKey) ?? -1;
     final today = _todayKey();
-    final skipToday = (lastSkipRev == rev) && (lastSkipDay == today);
-    if (!widget.forceTest && skipToday) return;
+
+    final skipToday =
+        (lastSkipRev == rev) && (lastSkipDay == today);
+
+    if (!widget.forceTest && skipToday) {
+      // 오늘 이미 건너뛴 동일 revision 이면 안 띄움
+      _hidePopup();
+      return;
+    }
+
+    _showPopup(
+      title: title,
+      body: body,
+      rev: rev,
+      prefs: prefs,
+      todayKey: today,
+    );
+  }
+
+  void _showPopup({
+    required String title,
+    required String body,
+    required int rev,
+    required SharedPreferences prefs,
+    required int todayKey,
+  }) {
+    if (!mounted) return;
+
+    // 이미 떠 있으면 한 번 지우고 다시
+    _hidePopup();
 
     final overlay = Overlay.of(context, rootOverlay: true);
     if (overlay == null) return;
 
-    _showing = true;
     bool rememberFlag = false;
 
     _entry = OverlayEntry(
-      maintainState: true,
       builder: (ctx) {
         final size = MediaQuery.of(ctx).size;
         final cardMaxW = (size.width * 0.82).clamp(260.0, 460.0);
-        final cardH    = (size.height * 0.46);
+        final cardH = (size.height * 0.46);
 
-        return _PopupHost(
-          width: cardMaxW,
-          height: cardH,
-          title: title,
-          body: body,
-          onRemember24h: (checked) async {
-            rememberFlag = checked;
-            if (checked) {
-              await prefs.setInt('ann.skip.rev', rev);
-              await prefs.setInt('ann.skip.day', _todayKey());
-            } else {
-              await prefs.remove('ann.skip.rev');
-              await prefs.remove('ann.skip.day');
-            }
-          },
-          onRequestClose: () async {
-            // X로 닫을 때도 체크되어 있으면 다시 저장(안전)
-            if (rememberFlag) {
-              await prefs.setInt('ann.skip.rev', rev);
-              await prefs.setInt('ann.skip.day', _todayKey());
-            }
-          },
-          onFullyClosed: () {
-            // 애니메이션이 완전히 끝난 뒤 Overlay 제거
-            try { _entry?.remove(); } catch (_) {}
-            _entry = null;
-            _showing = false;
-          },
+        return Material(
+          type: MaterialType.transparency,
+          child: Stack(
+            children: [
+              // 배경: 어두운 반투명 + 탭하면 닫기
+              GestureDetector(
+                onTap: () async {
+                  if (rememberFlag) {
+                    await prefs.setInt(_kSkipRevKey, rev);
+                    await prefs.setInt(_kSkipDayKey, todayKey);
+                  }
+                  _hidePopup();
+                },
+                child: Container(color: Colors.black54),
+              ),
+
+              // 중앙 카드
+              Align(
+                alignment: const Alignment(0, -0.05),
+                child: _PopupCard(
+                  width: cardMaxW,
+                  height: cardH,
+                  title: title,
+                  body: body,
+                  onRemember24h: (checked) async {
+                    rememberFlag = checked;
+                    if (checked) {
+                      await prefs.setInt(_kSkipRevKey, rev);
+                      await prefs.setInt(_kSkipDayKey, todayKey);
+                    } else {
+                      await prefs.remove(_kSkipRevKey);
+                      await prefs.remove(_kSkipDayKey);
+                    }
+                  },
+                  onClose: () async {
+                    if (rememberFlag) {
+                      await prefs.setInt(_kSkipRevKey, rev);
+                      await prefs.setInt(_kSkipDayKey, todayKey);
+                    }
+                    _hidePopup();
+                  },
+                ),
+              ),
+            ],
+          ),
         );
       },
     );
 
     overlay.insert(_entry!);
+    _showing = true;
+  }
+
+  void _hidePopup() {
+    if (_entry != null) {
+      try {
+        _entry!.remove();
+      } catch (_) {}
+      _entry = null;
+    }
+    _showing = false;
   }
 }
 
-/// 팝업 호스트: 외부 터치 차단 + 등장/퇴장 애니메이션 관리
-class _PopupHost extends StatefulWidget {
-  final double width;
-  final double height;
-  final String title;
-  final String body;
-  final Future<void> Function(bool remember24h) onRemember24h;
-  final Future<void> Function() onRequestClose; // 닫기 요청 시(데이터 저장 등)
-  final VoidCallback onFullyClosed;             // 퇴장 애니메이션이 끝난 뒤 호출
-
-  const _PopupHost({
-    required this.width,
-    required this.height,
-    required this.title,
-    required this.body,
-    required this.onRemember24h,
-    required this.onRequestClose,
-    required this.onFullyClosed,
-  });
-
-  @override
-  State<_PopupHost> createState() => _PopupHostState();
-}
-
-class _PopupHostState extends State<_PopupHost> with SingleTickerProviderStateMixin {
-  late final AnimationController _ac;
-  late final Animation<double> _scale;
-  late final Animation<Offset> _slide;   // 위에서 아래로 살짝
-  late final Animation<double> _fade;    // 카드 자체 페이드(배경은 투명 유지)
-
-  @override
-  void initState() {
-    super.initState();
-    _ac = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 280),
-      reverseDuration: const Duration(milliseconds: 200),
-    );
-    _scale = CurvedAnimation(parent: _ac, curve: Curves.easeOutBack, reverseCurve: Curves.easeIn);
-    _slide = Tween<Offset>(begin: const Offset(0, -0.05), end: Offset.zero)
-        .animate(CurvedAnimation(parent: _ac, curve: Curves.easeOut, reverseCurve: Curves.easeIn));
-    _fade = CurvedAnimation(parent: _ac, curve: Curves.easeOut, reverseCurve: Curves.easeIn);
-
-    // 등장
-    _ac.forward();
-  }
-
-  @override
-  void dispose() {
-    _ac.dispose();
-    super.dispose();
-  }
-
-  Future<void> _close() async {
-    await widget.onRequestClose();
-    // 퇴장 애니메이션
-    await _ac.reverse();
-    widget.onFullyClosed();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Stack(
-      children: [
-        // 외부 터치 완전 차단(투명)
-        const Positioned.fill(
-          child: ModalBarrier(
-            dismissible: false,
-            color: Colors.transparent,
-          ),
-        ),
-        // 팝업 본체
-        Align(
-          alignment: const Alignment(0, -0.05),
-          child: FadeTransition(
-            opacity: _fade,
-            child: SlideTransition(
-              position: _slide,
-              child: ScaleTransition(
-                scale: Tween<double>(begin: 0.9, end: 1.0).animate(_scale),
-                child: _PopupCard(
-                  width: widget.width,
-                  height: widget.height,
-                  title: widget.title,
-                  body: widget.body,
-                  onRemember24h: widget.onRemember24h,
-                  onClose: _close,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-/// 실제 카드 UI
+/// 실제 공지 카드 UI (각진 흰배경 + 검은 라인 + "오늘 하루 보지 않기")
 class _PopupCard extends StatefulWidget {
   final double width;
   final double height;
   final String title;
   final String body;
   final Future<void> Function(bool remember24h) onRemember24h;
-  final VoidCallback onClose;
+  final Future<void> Function() onClose; // 🔁 여기 타입을 Future<void>로!
 
   const _PopupCard({
     required this.width,
@@ -232,90 +229,179 @@ class _PopupCard extends StatefulWidget {
   State<_PopupCard> createState() => _PopupCardState();
 }
 
-class _PopupCardState extends State<_PopupCard> {
+class _PopupCardState extends State<_PopupCard>
+    with SingleTickerProviderStateMixin {
   bool _remember = false;
+  late final AnimationController _ac;
+  late final Animation<double> _scale;
+  late final Animation<Offset> _slide;
+  late final Animation<double> _fade;
+
+  @override
+  void initState() {
+    super.initState();
+    _ac = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 260),
+      reverseDuration: const Duration(milliseconds: 180),
+    );
+    _scale = CurvedAnimation(
+      parent: _ac,
+      curve: Curves.easeOutBack,
+      reverseCurve: Curves.easeIn,
+    );
+    _slide = Tween<Offset>(
+      begin: const Offset(0, -0.04),
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(
+        parent: _ac,
+        curve: Curves.easeOut,
+        reverseCurve: Curves.easeIn,
+      ),
+    );
+    _fade = CurvedAnimation(
+      parent: _ac,
+      curve: Curves.easeOut,
+      reverseCurve: Curves.easeIn,
+    );
+
+    _ac.forward();
+  }
+
+  @override
+  void dispose() {
+    _ac.dispose();
+    super.dispose();
+  }
+
+  Future<void> _close() async {
+    // onClose 안에서 SharedPreferences 정리 + Overlay 제거 수행
+    try {
+      await widget.onClose();
+    } catch (_) {}
+    // onClose 가 먼저 overlay 제거하고 나서 reverse 해도 문제는 없음
+    try {
+      await _ac.reverse();
+    } catch (_) {}
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Material(
-      color: Colors.transparent,
-      child: Container(
-        width: widget.width,
-        height: widget.height,
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.zero,                     // 각진
-          border: Border.all(color: Colors.black, width: 1.0), // 얇은 검정 라인
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.20),
-              blurRadius: 10,
-              offset: const Offset(2, 4),
-            ),
-          ],
-        ),
-        child: Stack(
-          children: [
-            // 내용
-            Padding(
-              padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // 제목: "공지: 제목"
-                  Text(
-                    '공지: ${widget.title}',
-                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  const SizedBox(height: 8),
+    const ink = Color(0xFF111111);
 
-                  // 본문 (스크롤)
-                  Expanded(
-                    child: SingleChildScrollView(
-                      padding: const EdgeInsets.symmetric(vertical: 6),
-                      child: Text(
-                        widget.body,
-                        style: const TextStyle(fontSize: 14.5, height: 1.48, color: Colors.black87),
-                      ),
+    return FadeTransition(
+      opacity: _fade,
+      child: SlideTransition(
+        position: _slide,
+        child: ScaleTransition(
+          scale: Tween<double>(begin: 0.94, end: 1.0).animate(_scale),
+          child: Material(
+            color: Colors.transparent,
+            child: Container(
+              width: widget.width,
+              height: widget.height,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.zero,
+                border: Border.all(color: Colors.black, width: 1.0),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.black.withOpacity(0.20),
+                    blurRadius: 10,
+                    offset: const Offset(2, 4),
+                  ),
+                ],
+              ),
+              child: Stack(
+                children: [
+                  Padding(
+                    padding:
+                    const EdgeInsets.fromLTRB(18, 16, 18, 14),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Text(
+                          '공지',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 6),
+                        if (widget.title.isNotEmpty) ...[
+                          Text(
+                            widget.title,
+                            style: const TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                        ],
+                        Expanded(
+                          child: SingleChildScrollView(
+                            padding:
+                            const EdgeInsets.symmetric(vertical: 4),
+                            child: Text(
+                              widget.body,
+                              style: const TextStyle(
+                                fontSize: 13.5,
+                                height: 1.45,
+                                color: Colors.black87,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const Divider(
+                          height: 20,
+                          thickness: 1,
+                          color: Color(0xFFDCDCDC),
+                        ),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.end,
+                          children: [
+                            Checkbox(
+                              value: _remember,
+                              onChanged: (v) async {
+                                final val = v ?? false;
+                                setState(() => _remember = val);
+                                await widget.onRemember24h(val);
+                              },
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            const SizedBox(width: 4),
+                            const Text(
+                              '오늘 하루 보지 않기',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                          ],
+                        ),
+                      ],
                     ),
                   ),
-
-                  const Divider(height: 20, thickness: 1, color: Colors.black12),
-
-                  // 오늘 하루 보지 않기
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.end,
-                    children: [
-                      Checkbox(
-                        value: _remember,
-                        onChanged: (v) async {
-                          final val = v ?? false;
-                          setState(() => _remember = val);
-                          await widget.onRemember24h(val); // 즉시 저장
-                        },
-                        visualDensity: VisualDensity.compact,
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: IconButton(
+                      onPressed: _close,
+                      icon: const Icon(
+                        Icons.close,
+                        size: 16,
+                        color: Colors.black54,
                       ),
-                      const Text('오늘 하루 보지 않기'),
-                    ],
+                      splashRadius: 14,
+                      padding: EdgeInsets.zero,
+                      constraints: const BoxConstraints(
+                        minWidth: 24,
+                        minHeight: 24,
+                      ),
+                    ),
                   ),
                 ],
               ),
             ),
-
-            // 닫기(X): 작고 모서리에 가깝게
-            Positioned(
-              top: 4,
-              right: 4,
-              child: IconButton(
-                onPressed: widget.onClose,
-                icon: const Icon(Icons.close, color: Colors.black54, size: 16),
-                splashRadius: 14,
-                padding: EdgeInsets.zero,
-                constraints: const BoxConstraints(minWidth: 22, minHeight: 22),
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
