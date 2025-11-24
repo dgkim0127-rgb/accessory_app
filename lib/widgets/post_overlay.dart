@@ -1687,12 +1687,13 @@ class _MediaArrowButton extends StatelessWidget {
     );
   }
 }
-
 // ───────────────────────── 비디오 플레이어 ─────────────────────────
+
+// ───────────────────────── 비디오 플레이어 (심플/안정 버전) ─────────────────────────
 
 class _VideoPlayerView extends StatefulWidget {
   final String url;
-  final ValueChanged<bool>? onZoomingChanged;
+  final ValueChanged<bool>? onZoomingChanged; // 지금은 안 쓰지만 시그니처 유지
 
   const _VideoPlayerView({
     required this.url,
@@ -1703,93 +1704,62 @@ class _VideoPlayerView extends StatefulWidget {
   State<_VideoPlayerView> createState() => _VideoPlayerViewState();
 }
 
-class _VideoPlayerViewState extends State<_VideoPlayerView>
-    with SingleTickerProviderStateMixin {
-  late VideoPlayerController _controller;
+class _VideoPlayerViewState extends State<_VideoPlayerView> {
+  late final VideoPlayerController _controller;
   bool _initialized = false;
-
-  final TransformationController _tc = TransformationController();
-  late final AnimationController _anim;
-  Animation<Matrix4>? _resetTween;
-
-  bool _zooming = false;
-  static const double _zoomThreshold = 1.01;
-  int _pointers = 0;
+  bool _error = false;
 
   @override
   void initState() {
     super.initState();
 
-    _anim = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 200),
-    )
-      ..addListener(() {
-        if (_resetTween != null) _tc.value = _resetTween!.value;
-      })
-      ..addStatusListener((s) {
-        if (s == AnimationStatus.completed) _setZooming(false);
-      });
-
-    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url))
-      ..setLooping(true)
-      ..setVolume(0.0);
+    _controller = VideoPlayerController.networkUrl(Uri.parse(widget.url));
 
     _initVideo();
   }
 
   Future<void> _initVideo() async {
     try {
-      await _controller.initialize().timeout(const Duration(seconds: 10));
+      await _controller.initialize();
       if (!mounted) return;
+
+      // 🔇 항상 무음 + 🔁 무한 반복
+      _controller
+        ..setVolume(0.0)
+        ..setLooping(true);
+
+      // ✅ 초기화 직후 자동 재생
+      await _controller.play();
+
       setState(() {
         _initialized = true;
       });
-      _controller.play();
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       setState(() {
-        _initialized = false;
+        _error = true;
       });
     }
   }
 
   @override
   void dispose() {
-    _anim.dispose();
-    _tc.dispose();
     _controller.dispose();
     super.dispose();
   }
 
-  void _setZooming(bool z) {
-    if (_zooming == z) return;
-    _zooming = z;
-    widget.onZoomingChanged?.call(z);
-  }
-
-  void _animateBack() {
-    _anim.stop();
-    _resetTween = Matrix4Tween(
-      begin: _tc.value,
-      end: Matrix4.identity(),
-    ).chain(CurveTween(curve: Curves.easeOutCubic)).animate(_anim);
-    _anim.forward(from: 0);
-  }
-
-  void _togglePlayPause() {
-    if (!_initialized) return;
-    setState(() {
-      if (_controller.value.isPlaying) {
-        _controller.pause();
-      } else {
-        _controller.play();
-      }
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
+    if (_error) {
+      return const Center(
+        child: Icon(
+          Icons.error_outline,
+          size: 40,
+          color: Colors.black54,
+        ),
+      );
+    }
+
     if (!_initialized) {
       return const Center(
         child: SizedBox(
@@ -1803,91 +1773,16 @@ class _VideoPlayerViewState extends State<_VideoPlayerView>
       );
     }
 
-    return Listener(
-      behavior: HitTestBehavior.opaque,
-      onPointerDown: (_) {
-        final was = _pointers;
-        _pointers++;
-        if (was < 2 && _pointers >= 2) _setZooming(true);
-      },
-      onPointerUp: (_) {
-        _pointers = (_pointers - 1).clamp(0, 10);
-        if (_pointers <= 0) _animateBack();
-      },
-      onPointerCancel: (_) {
-        _pointers = (_pointers - 1).clamp(0, 10);
-        if (_pointers <= 0) _animateBack();
-      },
-      child: GestureDetector(
-        onLongPress: () {
-          if (_initialized) _controller.pause();
-        },
-        onLongPressEnd: (_) {
-          if (_initialized) _controller.play();
-        },
-        onTap: _togglePlayPause,
-        child: LayoutBuilder(
-          builder: (_, constraints) {
-            final w = constraints.maxWidth;
-            final h = constraints.maxHeight;
-
-            return ClipRect(
-              child: InteractiveViewer(
-                transformationController: _tc,
-                constrained: false,
-                boundaryMargin: const EdgeInsets.all(99999),
-                minScale: 1.0,
-                maxScale: 3.0,
-                panEnabled:
-                _pointers >= 2 || _tc.value.getMaxScaleOnAxis() > 1.0,
-                scaleEnabled: _pointers >= 2,
-                clipBehavior: Clip.hardEdge,
-                onInteractionStart: (_) => _setZooming(true),
-                onInteractionUpdate: (_) {
-                  final s = _tc.value.getMaxScaleOnAxis();
-                  _setZooming(s > _zoomThreshold || _pointers >= 2);
-                },
-                onInteractionEnd: (_) {
-                  if (_pointers == 0) _animateBack();
-                },
-                child: SizedBox(
-                  width: w,
-                  height: h,
-                  child: Stack(
-                    alignment: Alignment.center,
-                    children: [
-                      Positioned.fill(
-                        child: FittedBox(
-                          fit: BoxFit.contain,
-                          child: SizedBox(
-                            width: _controller.value.size.width,
-                            height: _controller.value.size.height,
-                            child: VideoPlayer(_controller),
-                          ),
-                        ),
-                      ),
-                      Positioned(
-                        left: 8,
-                        right: 8,
-                        bottom: 8,
-                        child: VideoProgressIndicator(
-                          _controller,
-                          allowScrubbing: true,
-                          padding:
-                          const EdgeInsets.symmetric(horizontal: 4),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            );
-          },
-        ),
-      ),
+    // 🔥 완전 기본 패턴: 비율맞춰서 딱 맞게 출력 + 자동재생
+    return AspectRatio(
+      aspectRatio: _controller.value.aspectRatio == 0
+          ? 16 / 9
+          : _controller.value.aspectRatio,
+      child: VideoPlayer(_controller),
     );
   }
 }
+
 
 // ───────────────────────── 두 손가락 확대 이미지 ─────────────────────────
 
