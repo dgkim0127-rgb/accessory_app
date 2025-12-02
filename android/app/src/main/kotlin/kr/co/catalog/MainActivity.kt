@@ -1,4 +1,4 @@
-package com.example.accessory_app
+package kr.co.catalog
 
 import io.flutter.embedding.android.FlutterActivity
 
