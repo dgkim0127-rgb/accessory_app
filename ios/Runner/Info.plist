@@ -45,5 +45,15 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>게시물에 이미지를 업로드하기 위해 사진 보관함 접근 권한이 필요합니다.</string>
+
+    <key>NSUserNotificationUsageDescription</key>
+    <string>새로운 게시물 및 중요한 알림을 받기 위해 알림 권한이 필요합니다.</string>
+
+    <key>NSLocalNotificationUsageDescription</key>
+    <string>예약된 알림을 받기 위해 알림 권한이 필요합니다.</string>
+
 </dict>
 </plist>
