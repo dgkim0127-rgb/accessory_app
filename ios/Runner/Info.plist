@@ -5,7 +5,7 @@
 	<key>CFBundleDevelopmentRegion</key>
 	<string>$(DEVELOPMENT_LANGUAGE)</string>
 	<key>CFBundleDisplayName</key>
-	<string>Accessory App</string>
+	<string>Catalog</string>
 	<key>CFBundleExecutable</key>
 	<string>$(EXECUTABLE_NAME)</string>
 	<key>CFBundleIdentifier</key>
@@ -55,5 +55,7 @@
     <key>NSLocalNotificationUsageDescription</key>
     <string>예약된 알림을 받기 위해 알림 권한이 필요합니다.</string>
 
+    <key>AppUsesNonExemptEncryption</key>
+    <false/>
 </dict>
 </plist>
