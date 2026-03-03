@@ -12,9 +12,10 @@ project 'Runner', {
 require 'fileutils'
 
 def flutter_root
-  generated_xcconfig_path = File.expand_path(File.join('Flutter', 'Generated.xcconfig'), __FILE__)
+  # ✅ 핵심: __FILE__ 말고 __dir__ 사용해야 경로가 ios/Flutter/Generated.xcconfig로 잡힘
+  generated_xcconfig_path = File.expand_path(File.join('Flutter', 'Generated.xcconfig'), __dir__)
 
-  # ✅ Codemagic에서 pod install이 pub get보다 먼저 돌 수도 있으니, 없으면 만들어두고 진행
+  # Codemagic에서 pod install이 pub get보다 먼저 돌 수도 있으니, 없으면 만들어두고 진행
   unless File.exist?(generated_xcconfig_path)
     FileUtils.mkdir_p(File.dirname(generated_xcconfig_path))
     File.write(generated_xcconfig_path, "")
@@ -25,9 +26,7 @@ def flutter_root
     return matches[1].strip if matches
   end
 
-  # ✅ 그래도 못 찾으면 환경변수 FLUTTER_ROOT 사용(빌드 머신에 존재)
   return ENV['FLUTTER_ROOT'] if ENV['FLUTTER_ROOT'] && !ENV['FLUTTER_ROOT'].empty?
-
   raise "FLUTTER_ROOT not found. Ensure Flutter is installed and 'flutter pub get' runs."
 end
 
@@ -44,7 +43,6 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-    # ✅ 모든 Pod의 최소 iOS 타겟을 15.0으로 강제
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
     end
