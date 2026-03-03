@@ -1,0 +1,20 @@
+{
+  "name": "accessory_app",
+  "version": "1.0.0",
+  "description": "Accessory App",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "rc": "set GOOGLE_APPLICATION_CREDENTIALS=C:\\keys\\firebase-admin.json&& node tools\\update_remote_config.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "firebase-admin": "^13.7.0"
+  }
+}s

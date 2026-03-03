@@ -1,17 +1,33 @@
-// lib/pages/search_page.dart
+// lib/pages/search_page.dart ✅ 최종 전체
 import 'dart:async';
 import 'dart:math';
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
 import '../widgets/post_overlay.dart';
+import '../utils/cloudinary_image_utils.dart';
 
 class _SearchCache {
   static List<String>? shuffledIds;
+}
+
+/// ✅ 검색 상태(검색어 + 필터) 스택용
+class _SearchState {
+  final String q;
+  final String? brandKor;
+  final String? categoryCode;
+  const _SearchState({
+    required this.q,
+    required this.brandKor,
+    required this.categoryCode,
+  });
 }
 
 class SearchPage extends StatefulWidget {
@@ -29,7 +45,8 @@ class _SearchPageState extends State<SearchPage>
   bool _showRecent = false;
   bool _refreshing = false;
 
-  final List<String> _history = [];
+  // ✅ "상태 스택" (뒤로가기 복귀)
+  final List<_SearchState> _stack = [];
 
   final LayerLink _anchor = LayerLink();
   late final AnimationController _dropCtrl;
@@ -41,8 +58,8 @@ class _SearchPageState extends State<SearchPage>
 
   // ---------- 필터 상태 ----------
   bool _filterOpen = false;
-  String? _selectedBrandKor; // null → 전체
-  String? _selectedCategoryCode; // null → 전체
+  String? _selectedBrandKor;
+  String? _selectedCategoryCode;
 
   @override
   bool get wantKeepAlive => true;
@@ -146,10 +163,12 @@ class _SearchPageState extends State<SearchPage>
     setState(() => _showRecent = false);
   }
 
+  /// ✅ 검색 실행: "현재 상태"를 스택에 저장하고 새 검색으로 전환
   void _submit([String? preset]) async {
     final q = (preset ?? _ctrl.text).trim();
     if (q.isEmpty) return;
 
+    // 검색 로그(실패해도 무시)
     try {
       await FirebaseFirestore.instance.collection('search_logs_public').add({
         'q': q,
@@ -157,8 +176,23 @@ class _SearchPageState extends State<SearchPage>
       });
     } catch (_) {}
 
-    if (_q.isNotEmpty && (_history.isEmpty || _history.last != _q)) {
-      _history.add(_q);
+    // ✅ 현재 상태 push
+    final current = _SearchState(
+      q: _q,
+      brandKor: _selectedBrandKor,
+      categoryCode: _selectedCategoryCode,
+    );
+    final shouldPush = !(current.q.isEmpty &&
+        current.brandKor == null &&
+        current.categoryCode == null);
+
+    if (shouldPush) {
+      // 중복 push 방지
+      final dup = _stack.isNotEmpty &&
+          _stack.last.q == current.q &&
+          _stack.last.brandKor == current.brandKor &&
+          _stack.last.categoryCode == current.categoryCode;
+      if (!dup) _stack.add(current);
     }
 
     _ctrl.text = q;
@@ -177,60 +211,68 @@ class _SearchPageState extends State<SearchPage>
     _closeRecentOverlay();
   }
 
+  /// ✅ 뒤로가기: 이전 검색 상태(검색어+필터)로 복귀
   Future<bool> _onWillPop() async {
     if (_showRecent) {
       _closeRecentOverlay();
       return false;
     }
-    if (_history.isNotEmpty) {
-      final prev = _history.removeLast();
-      setState(() => _q = prev);
-      _ctrl.text = prev;
-      _ctrl.selection = TextSelection.collapsed(offset: prev.length);
-      _saveLastQuery(prev);
+
+    if (_stack.isNotEmpty) {
+      final prev = _stack.removeLast();
+      setState(() {
+        _q = prev.q;
+        _selectedBrandKor = prev.brandKor;
+        _selectedCategoryCode = prev.categoryCode;
+
+        _ctrl.text = prev.q;
+        _ctrl.selection = TextSelection.collapsed(offset: prev.q.length);
+      });
+      _saveLastQuery(prev.q);
       return false;
     }
-    if (_q.isNotEmpty) {
-      setState(() => _q = '');
+
+    if (_q.isNotEmpty || _selectedBrandKor != null || _selectedCategoryCode != null) {
+      setState(() {
+        _q = '';
+        _selectedBrandKor = null;
+        _selectedCategoryCode = null;
+        _ctrl.clear();
+      });
       _saveLastQuery('');
       return false;
     }
+
     return true;
   }
 
-  // ---------- 필터 패널 UI ----------
-  Widget _buildFilterSection() {
+  // ---------- 필터 섹션 ----------
+  Widget _buildFilterSection(ThemeData theme, bool isDark) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         InkWell(
-          onTap: () {
-            setState(() => _filterOpen = !_filterOpen);
-          },
+          onTap: () => setState(() => _filterOpen = !_filterOpen),
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(2, 16, 2, 4),
+            padding: const EdgeInsets.symmetric(vertical: 8),
             child: Row(
               children: [
-                const Text(
-                  '필터 검색',
+                Text(
+                  '상세 필터 검색',
                   style: TextStyle(
                     fontSize: 15,
                     fontWeight: FontWeight.w800,
+                    color: theme.colorScheme.onSurface,
                   ),
                 ),
                 const SizedBox(width: 6),
                 AnimatedRotation(
                   turns: _filterOpen ? 0.5 : 0.0,
                   duration: const Duration(milliseconds: 200),
-                  child: const Icon(
-                    Icons.expand_more,
-                    size: 20,
-                    color: Colors.black87,
-                  ),
+                  child: Icon(Icons.expand_more, size: 20, color: theme.colorScheme.onSurface),
                 ),
                 const Spacer(),
-                if (_selectedBrandKor != null ||
-                    _selectedCategoryCode != null)
+                if (_selectedBrandKor != null || _selectedCategoryCode != null)
                   TextButton(
                     onPressed: () {
                       setState(() {
@@ -238,11 +280,17 @@ class _SearchPageState extends State<SearchPage>
                         _selectedCategoryCode = null;
                       });
                     },
-                    child: const Text(
+                    style: TextButton.styleFrom(
+                      padding: EdgeInsets.zero,
+                      minimumSize: const Size(0, 0),
+                      tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    ),
+                    child: Text(
                       '초기화',
                       style: TextStyle(
-                        fontSize: 12,
-                        color: Colors.black54,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: Colors.redAccent.shade200,
                       ),
                     ),
                   ),
@@ -254,23 +302,30 @@ class _SearchPageState extends State<SearchPage>
           duration: const Duration(milliseconds: 220),
           curve: Curves.easeOutCubic,
           child: _filterOpen
-              ? Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _BrandFilterLine(
-                selectedBrandKor: _selectedBrandKor,
-                onSelected: (kor) {
-                  setState(() => _selectedBrandKor = kor);
-                },
-              ),
-              const SizedBox(height: 6),
-              _CategoryFilterLine(
-                selectedCategoryCode: _selectedCategoryCode,
-                onSelected: (code) {
-                  setState(() => _selectedCategoryCode = code);
-                },
-              ),
-            ],
+              ? Container(
+            margin: const EdgeInsets.only(top: 8, bottom: 16),
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: isDark ? const Color(0xFF1A1D22) : const Color(0xFFF9F9F9),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: theme.dividerTheme.color ?? Colors.transparent),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _BrandFilterLine(
+                  selectedBrandKor: _selectedBrandKor,
+                  onSelected: (kor) => setState(() => _selectedBrandKor = kor),
+                  theme: theme,
+                ),
+                const SizedBox(height: 16),
+                _CategoryFilterLine(
+                  selectedCategoryCode: _selectedCategoryCode,
+                  onSelected: (code) => setState(() => _selectedCategoryCode = code),
+                  theme: theme,
+                ),
+              ],
+            ),
           )
               : const SizedBox.shrink(),
         ),
@@ -278,16 +333,171 @@ class _SearchPageState extends State<SearchPage>
     );
   }
 
+  /// ✅ 브랜드 매칭 스트립(3.5개 보이게 + 가로 스크롤)
+  /// ❗️리턴 타입은 Widget (Sliver 클래스 없음)
+  Widget _brandMatchStrip({
+    required ThemeData theme,
+    required bool isDark,
+  }) {
+    if (_q.trim().isEmpty) return const SliverToBoxAdapter(child: SizedBox.shrink());
+
+    final qLower = _q.trim().toLowerCase();
+
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance.collection('brands').orderBy('rank').limit(80).snapshots(),
+      builder: (context, snap) {
+        if (!snap.hasData) {
+          return const SliverToBoxAdapter(child: SizedBox.shrink());
+        }
+
+        final docs = snap.data!.docs;
+
+        final matched = docs.where((d) {
+          final m = d.data();
+          final kor = (m['nameKor'] ?? '').toString().trim();
+          final eng = (m['nameEng'] ?? m['eng'] ?? '').toString().trim();
+          return kor.toLowerCase().contains(qLower) || eng.toLowerCase().contains(qLower);
+        }).toList();
+
+        if (matched.isEmpty) {
+          return const SliverToBoxAdapter(child: SizedBox.shrink());
+        }
+
+        final show = matched.take(24).toList();
+
+        return SliverToBoxAdapter(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '브랜드',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w900,
+                    fontSize: 14,
+                    color: theme.colorScheme.onSurface,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                LayoutBuilder(
+                  builder: (context, c) {
+                    final w = c.maxWidth;
+                    final itemW = w / 3.5; // ✅ 3.5개
+                    final avatar = min(56.0, itemW - 16);
+
+                    return SizedBox(
+                      height: avatar + 26,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        physics: const BouncingScrollPhysics(),
+                        itemCount: show.length,
+                        separatorBuilder: (_, __) => const SizedBox(width: 10),
+                        itemBuilder: (_, i) {
+                          final d = show[i];
+                          final m = d.data();
+                          final kor = (m['nameKor'] ?? '').toString().trim();
+                          final eng = (m['nameEng'] ?? m['eng'] ?? '').toString().trim();
+                          final label = kor.isNotEmpty ? kor : (eng.isNotEmpty ? eng : 'Brand');
+
+                          final rawImg = (m['profileUrl'] ??
+                              m['logoUrl'] ??
+                              m['imageUrl'] ??
+                              m['thumbUrl'] ??
+                              '')
+                              .toString()
+                              .trim();
+
+                          return SizedBox(
+                            width: itemW,
+                            child: InkWell(
+                              borderRadius: BorderRadius.circular(12),
+                              onTap: () {
+                                setState(() {
+                                  _selectedBrandKor = kor.isNotEmpty ? kor : null;
+                                  _filterOpen = true;
+                                });
+                              },
+                              child: Column(
+                                children: [
+                                  Container(
+                                    width: avatar,
+                                    height: avatar,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: isDark ? const Color(0xFF2A2F38) : const Color(0xFFF0F0F0),
+                                      border: Border.all(
+                                        color: theme.dividerTheme.color ?? Colors.transparent,
+                                      ),
+                                    ),
+                                    clipBehavior: Clip.antiAlias,
+                                    child: rawImg.isEmpty
+                                        ? Center(
+                                      child: Text(
+                                        label.characters.first.toUpperCase(),
+                                        style: TextStyle(
+                                          fontWeight: FontWeight.w900,
+                                          color: theme.colorScheme.onSurface.withOpacity(0.7),
+                                        ),
+                                      ),
+                                    )
+                                        : CachedNetworkImage(
+                                      imageUrl: rawImg,
+                                      fit: BoxFit.cover,
+                                      placeholder: (_, __) => ColoredBox(
+                                        color: isDark ? const Color(0xFF2A2F38) : const Color(0xFFE0E0E0),
+                                      ),
+                                      errorWidget: (_, __, ___) => Center(
+                                        child: Text(
+                                          label.characters.first.toUpperCase(),
+                                          style: TextStyle(
+                                            fontWeight: FontWeight.w900,
+                                            color: theme.colorScheme.onSurface.withOpacity(0.7),
+                                          ),
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(
+                                    label,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.center,
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w700,
+                                      color: theme.colorScheme.onSurface.withOpacity(0.85),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    );
+                  },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     super.build(context);
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
-    final maxBarWidth = 500.0;
-    final barWidth =
-    min(MediaQuery.of(context).size.width - 32, maxBarWidth);
+    final maxBarWidth = 600.0;
+    final barWidth = min(MediaQuery.of(context).size.width - 32, maxBarWidth);
 
     const double kTopPadding = 12;
-    const double kSearchHeight = 48;
+    const double kSearchHeight = 54;
 
     final searchBar = Center(
       child: CompositedTransformTarget(
@@ -296,37 +506,46 @@ class _SearchPageState extends State<SearchPage>
           width: barWidth,
           height: kSearchHeight,
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
+            padding: const EdgeInsets.symmetric(horizontal: 16),
             decoration: BoxDecoration(
-              color: Colors.white,
+              color: isDark ? const Color(0xFF1A1D22) : Colors.white,
               borderRadius: BorderRadius.circular(40),
-              border: Border.all(color: Colors.black12),
+              border: Border.all(color: theme.dividerTheme.color ?? Colors.transparent, width: 1.5),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withOpacity(0.05),
-                  blurRadius: 5,
-                  offset: const Offset(0, 3),
+                  color: isDark ? Colors.black45 : Colors.black.withOpacity(0.06),
+                  blurRadius: 15,
+                  offset: const Offset(0, 5),
                 ),
               ],
             ),
             child: Row(
               children: [
-                const Icon(Icons.search, color: Colors.black54),
-                const SizedBox(width: 8),
+                Icon(Icons.search, color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                const SizedBox(width: 12),
                 Expanded(
                   child: TextField(
                     controller: _ctrl,
                     onTap: _openRecentOverlay,
                     onSubmitted: (_) => _submit(),
-                    decoration: const InputDecoration(
-                      hintText: '검색',
+                    style: TextStyle(
+                      color: theme.colorScheme.onSurface,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
+                    ),
+                    decoration: InputDecoration(
+                      hintText: '어떤 주얼리를 찾으시나요?',
+                      hintStyle: TextStyle(
+                        color: theme.colorScheme.onSurface.withOpacity(0.3),
+                        fontWeight: FontWeight.w500,
+                      ),
                       border: InputBorder.none,
                     ),
                   ),
                 ),
                 if (_ctrl.text.isNotEmpty)
                   IconButton(
-                    icon: const Icon(Icons.close),
+                    icon: Icon(Icons.close, color: theme.colorScheme.onSurface.withOpacity(0.7)),
                     onPressed: () {
                       setState(() => _ctrl.clear());
                       _openRecentOverlay();
@@ -335,15 +554,12 @@ class _SearchPageState extends State<SearchPage>
                 FilledButton(
                   onPressed: _submit,
                   style: FilledButton.styleFrom(
-                    backgroundColor: Colors.black,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(50),
-                    ),
-                    padding:
-                    const EdgeInsets.symmetric(horizontal: 16),
-                    minimumSize: const Size(0, 36),
+                    backgroundColor: theme.colorScheme.onSurface,
+                    foregroundColor: theme.scaffoldBackgroundColor,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(50)),
+                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
                   ),
-                  child: const Text('검색'),
+                  child: const Text('검색', style: TextStyle(fontWeight: FontWeight.w800, fontSize: 14)),
                 ),
               ],
             ),
@@ -352,66 +568,82 @@ class _SearchPageState extends State<SearchPage>
       ),
     );
 
-    final bodyBelow = ListView(
-      physics: const AlwaysScrollableScrollPhysics(),
-      padding: EdgeInsets.only(
-        top: kTopPadding + 8,
-        bottom: 20,
-      ),
-      children: [
-        const SizedBox(height: 40),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Padding(
-                padding: EdgeInsets.only(left: 2, bottom: 8),
-                child: Text(
-                  '인기 검색어',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w800,
-                    fontSize: 16,
+    final bodyBelow = CustomScrollView(
+      physics: const AlwaysScrollableScrollPhysics(parent: BouncingScrollPhysics()),
+      slivers: [
+        SliverPadding(
+          padding: const EdgeInsets.only(
+            top: kTopPadding + kSearchHeight + 16,
+            bottom: 16,
+          ),
+          sliver: SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    '인기 검색어',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w800,
+                      fontSize: 17,
+                      color: theme.colorScheme.onSurface,
+                    ),
                   ),
-                ),
+                  const SizedBox(height: 12),
+                  _PopularSearchTop5(
+                    theme: theme,
+                    isDark: isDark,
+                    onPick: (word) {
+                      _ctrl.text = word;
+                      _ctrl.selection = TextSelection.collapsed(offset: word.length);
+                      _submit(word);
+                    },
+                  ),
+                  const SizedBox(height: 18),
+                  _buildFilterSection(theme, isDark),
+                ],
               ),
-              _PopularSearchTop5(onPick: (word) {
-                _ctrl.text = word;
-                _ctrl.selection =
-                    TextSelection.collapsed(offset: word.length);
-                _submit(word);
-              }),
-              _buildFilterSection(),
-            ],
+            ),
           ),
         ),
-        const SizedBox(height: 8),
+
+        // ✅ 브랜드 매칭 스트립(검색 결과 위)
+        _brandMatchStrip(theme: theme, isDark: isDark),
+
+        // ✅ 결과 그리드
         if (_q.isEmpty)
           _RandomExploreGrid(
             forceLoading: _refreshing,
             brandFilterKor: _selectedBrandKor,
             categoryFilterCode: _selectedCategoryCode,
+            theme: theme,
+            isDark: isDark,
           )
         else
           _SearchResultGrid(
             query: _q,
             brandFilterKor: _selectedBrandKor,
             categoryFilterCode: _selectedCategoryCode,
+            theme: theme,
+            isDark: isDark,
           ),
+
+        const SliverToBoxAdapter(child: SizedBox(height: 40)),
       ],
     );
 
-    const double itemHeight = 34;
-    final int visible = _recent.length.clamp(0, 8);
-    final double targetHeight = visible * itemHeight + 6;
-    const double maxHeight = 160;
+    // 최근 검색어 드롭다운
+    const double itemHeight = 44;
+    final int visible = _recent.length.clamp(0, 6);
+    final double targetHeight = visible * itemHeight + 16;
+    const double maxHeight = 280;
 
-    final recentDropdown =
-    (_showRecent && _recent.isNotEmpty)
+    final recentDropdown = (_showRecent && _recent.isNotEmpty)
         ? CompositedTransformFollower(
       link: _anchor,
       showWhenUnlinked: false,
-      offset: const Offset(0, kSearchHeight),
+      offset: const Offset(0, kSearchHeight + 8),
       child: FadeTransition(
         opacity: _fade,
         child: SlideTransition(
@@ -422,86 +654,60 @@ class _SearchPageState extends State<SearchPage>
             child: Material(
               color: Colors.transparent,
               child: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxWidth: barWidth,
-                  maxHeight: maxHeight,
-                ),
+                constraints: BoxConstraints(maxWidth: barWidth, maxHeight: maxHeight),
                 child: Container(
                   width: barWidth,
-                  height:
-                  min(targetHeight, maxHeight.toDouble()),
+                  height: min(targetHeight, maxHeight.toDouble()),
                   decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius:
-                    const BorderRadius.vertical(
-                        bottom: Radius.circular(16)),
+                    color: isDark ? const Color(0xFF22252A) : Colors.white,
+                    borderRadius: BorderRadius.circular(24),
                     boxShadow: [
                       BoxShadow(
-                        color:
-                        Colors.black.withOpacity(0.18),
-                        blurRadius: 14,
-                        offset: const Offset(0, 8),
+                        color: isDark ? Colors.black87 : Colors.black.withOpacity(0.15),
+                        blurRadius: 20,
+                        offset: const Offset(0, 10),
                       ),
                     ],
-                    border: Border.all(
-                      color: const Color(0xffe9e9e9),
-                    ),
+                    border: Border.all(color: theme.dividerTheme.color ?? Colors.transparent),
                   ),
                   child: ListView.builder(
-                    padding: const EdgeInsets.symmetric(
-                        vertical: 3),
-                    physics:
-                    const BouncingScrollPhysics(),
+                    padding: const EdgeInsets.symmetric(vertical: 8),
+                    physics: const BouncingScrollPhysics(),
                     itemCount: visible,
                     itemBuilder: (_, i) {
                       final e = _recent[i];
-                      return SizedBox(
-                        height: itemHeight,
-                        child: InkWell(
-                          onTap: () => _submit(e),
-                          child: Padding(
-                            padding:
-                            const EdgeInsets.symmetric(
-                                horizontal: 12),
-                            child: Row(
-                              children: [
-                                const Icon(
-                                  Icons.history,
-                                  size: 16,
-                                  color: Colors.black45,
-                                ),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Text(
-                                    e,
-                                    maxLines: 1,
-                                    overflow:
-                                    TextOverflow.ellipsis,
-                                    style: const TextStyle(
-                                      fontSize: 14.5,
-                                      color:
-                                      Colors.black87,
-                                    ),
+                      return InkWell(
+                        onTap: () => _submit(e),
+                        child: Container(
+                          height: itemHeight,
+                          padding: const EdgeInsets.symmetric(horizontal: 20),
+                          child: Row(
+                            children: [
+                              Icon(Icons.history, size: 18, color: theme.colorScheme.onSurface.withOpacity(0.4)),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  e,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w500,
+                                    color: theme.colorScheme.onSurface,
                                   ),
                                 ),
-                                IconButton(
-                                  icon: const Icon(
-                                    Icons.close,
-                                    size: 16,
-                                  ),
-                                  splashRadius: 16,
-                                  onPressed: () async {
-                                    setState(() =>
-                                        _recent.remove(
-                                            e));
-                                    await _saveRecent();
-                                    if (_recent.isEmpty) {
-                                      _closeRecentOverlay();
-                                    }
-                                  },
-                                ),
-                              ],
-                            ),
+                              ),
+                              IconButton(
+                                icon: Icon(Icons.close, size: 16, color: theme.colorScheme.onSurface.withOpacity(0.4)),
+                                padding: EdgeInsets.zero,
+                                constraints: const BoxConstraints(),
+                                onPressed: () async {
+                                  setState(() => _recent.remove(e));
+                                  await _saveRecent();
+                                  if (_recent.isEmpty) _closeRecentOverlay();
+                                },
+                              ),
+                            ],
                           ),
                         ),
                       );
@@ -528,29 +734,27 @@ class _SearchPageState extends State<SearchPage>
     return WillPopScope(
       onWillPop: _onWillPop,
       child: Scaffold(
-        backgroundColor: const Color(0xfffafafa),
+        backgroundColor: theme.scaffoldBackgroundColor,
         body: ScrollConfiguration(
           behavior: const _DragEverywhere(),
           child: Stack(
             children: [
               RefreshIndicator(
-                color: Colors.black,
+                color: isDark ? Colors.white : Colors.black,
+                backgroundColor: theme.scaffoldBackgroundColor,
                 onRefresh: _onRefresh,
                 child: bodyBelow,
               ),
+              dismissLayer,
               Positioned(
                 top: kTopPadding,
                 left: 16,
                 right: 16,
                 child: searchBar,
               ),
-              dismissLayer,
               Positioned(
                 top: kTopPadding,
-                left: (MediaQuery.of(context).size.width - barWidth) /
-                    2 +
-                    16 -
-                    16,
+                left: (MediaQuery.of(context).size.width - barWidth) / 2 + 16 - 16,
                 child: recentDropdown,
               ),
             ],
@@ -567,11 +771,14 @@ class _FilterTextItem extends StatelessWidget {
   final String label;
   final bool selected;
   final VoidCallback onTap;
+  final ThemeData theme;
 
   const _FilterTextItem({
+    super.key,
     required this.label,
     required this.selected,
     required this.onTap,
+    required this.theme,
   });
 
   @override
@@ -579,15 +786,22 @@ class _FilterTextItem extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 200),
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        decoration: BoxDecoration(
+          color: selected ? theme.colorScheme.onSurface : Colors.transparent,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? Colors.transparent : theme.colorScheme.onSurface.withOpacity(0.2),
+          ),
+        ),
         child: Text(
           label,
           style: TextStyle(
-            fontSize: 14,
-            fontWeight: selected ? FontWeight.w800 : FontWeight.w500,
-            color: selected ? Colors.black : Colors.black54,
-            decoration: selected ? TextDecoration.underline : null,
+            fontSize: 13,
+            fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+            color: selected ? theme.scaffoldBackgroundColor : theme.colorScheme.onSurface.withOpacity(0.7),
           ),
         ),
       ),
@@ -598,90 +812,65 @@ class _FilterTextItem extends StatelessWidget {
 class _BrandFilterLine extends StatelessWidget {
   final String? selectedBrandKor;
   final ValueChanged<String?> onSelected;
+  final ThemeData theme;
 
   const _BrandFilterLine({
+    super.key,
     required this.selectedBrandKor,
     required this.onSelected,
+    required this.theme,
   });
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('brands')
-          .orderBy('rank')
-          .limit(30)
-          .snapshots(),
+      stream: FirebaseFirestore.instance.collection('brands').orderBy('rank').limit(30).snapshots(),
       builder: (context, snap) {
-        final chips = <Widget>[];
-
-        chips.add(
+        final chips = <Widget>[
           _FilterTextItem(
             label: '전체',
             selected: selectedBrandKor == null,
             onTap: () => onSelected(null),
+            theme: theme,
           ),
-        );
+        ];
 
         if (snap.hasData) {
-          final docs = snap.data!.docs;
-          final items = docs
-              .map((d) {
-            final m = d.data();
-            final kor = (m['nameKor'] ?? '').toString().trim();
-            final rank = (m['rank'] is int)
-                ? m['rank'] as int
-                : 1000000000;
-            return MapEntry(rank, kor);
-          })
+          final items = snap.data!.docs
+              .map((d) => MapEntry(
+            d.data()['rank'] is int ? d.data()['rank'] as int : 1000,
+            (d.data()['nameKor'] ?? '').toString().trim(),
+          ))
               .where((e) => e.value.isNotEmpty)
               .toList()
-            ..sort((a, b) => a.key != b.key
-                ? a.key.compareTo(b.key)
-                : a.value.compareTo(b.value));
+            ..sort((a, b) => a.key != b.key ? a.key.compareTo(b.key) : a.value.compareTo(b.value));
 
           for (final e in items) {
-            final kor = e.value;
             chips.add(
-              _FilterTextItem(
-                label: kor,
-                selected: selectedBrandKor == kor,
-                onTap: () =>
-                    onSelected(selectedBrandKor == kor ? null : kor),
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: _FilterTextItem(
+                  label: e.value,
+                  selected: selectedBrandKor == e.value,
+                  onTap: () => onSelected(selectedBrandKor == e.value ? null : e.value),
+                  theme: theme,
+                ),
               ),
             );
           }
         }
 
-        final withDivider = <Widget>[];
-        for (var i = 0; i < chips.length; i++) {
-          if (i > 0) {
-            withDivider.add(const Text(
-              '  |  ',
-              style: TextStyle(
-                fontSize: 13,
-                color: Colors.black26,
-              ),
-            ));
-          }
-          withDivider.add(chips[i]);
-        }
-
-        return SingleChildScrollView(
-          scrollDirection: Axis.horizontal,
-          child: Row(
-            children: [
-              const Text(
-                '브랜드 ',
-                style: TextStyle(
-                  fontSize: 13,
-                  color: Colors.black54,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              ...withDivider,
-            ],
-          ),
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('브랜드', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: theme.colorScheme.onSurface.withOpacity(0.5))),
+            const SizedBox(height: 8),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              physics: const BouncingScrollPhysics(),
+              child: Row(children: chips),
+            ),
+          ],
         );
       },
     );
@@ -691,10 +880,13 @@ class _BrandFilterLine extends StatelessWidget {
 class _CategoryFilterLine extends StatelessWidget {
   final String? selectedCategoryCode;
   final ValueChanged<String?> onSelected;
+  final ThemeData theme;
 
   const _CategoryFilterLine({
+    super.key,
     required this.selectedCategoryCode,
     required this.onSelected,
+    required this.theme,
   });
 
   @override
@@ -710,65 +902,49 @@ class _CategoryFilterLine extends StatelessWidget {
 
     final chips = <Widget>[];
     labels.forEach((code, label) {
-      final selected = selectedCategoryCode == code;
       chips.add(
-        _FilterTextItem(
-          label: label,
-          selected: selected,
-          onTap: () => onSelected(selected ? null : code),
+        Padding(
+          padding: EdgeInsets.only(left: chips.isEmpty ? 0 : 8),
+          child: _FilterTextItem(
+            label: label,
+            selected: selectedCategoryCode == code,
+            onTap: () => onSelected(selectedCategoryCode == code ? null : code),
+            theme: theme,
+          ),
         ),
       );
     });
 
-    final withDivider = <Widget>[];
-    for (var i = 0; i < chips.length; i++) {
-      if (i > 0) {
-        withDivider.add(const Text(
-          '  |  ',
-          style: TextStyle(
-            fontSize: 13,
-            color: Colors.black26,
-          ),
-        ));
-      }
-      withDivider.add(chips[i]);
-    }
-
-    return SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          const Text(
-            '카테고리 ',
-            style: TextStyle(
-              fontSize: 13,
-              color: Colors.black54,
-              fontWeight: FontWeight.w600,
-            ),
-          ),
-          ...withDivider,
-        ],
-      ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('카테고리', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: theme.colorScheme.onSurface.withOpacity(0.5))),
+        const SizedBox(height: 8),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
+          child: Row(children: chips),
+        ),
+      ],
     );
   }
 }
 
-/* ---------------------- 인기 검색어 TOP5 ---------------------- */
+/* ---------------------- 인기 검색어 ---------------------- */
 
 class _PopularSearchTop5 extends StatelessWidget {
+  final ThemeData theme;
+  final bool isDark;
   final void Function(String word)? onPick;
-  const _PopularSearchTop5({this.onPick});
+
+  const _PopularSearchTop5({super.key, required this.theme, required this.isDark, this.onPick});
 
   @override
   Widget build(BuildContext context) {
     const fallback = ['반지', '목걸이', '귀걸이', '팔찌', '티파니'];
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('search_logs_public')
-          .orderBy('createdAt', descending: true)
-          .limit(1000)
-          .snapshots(),
+      stream: FirebaseFirestore.instance.collection('search_logs_public').orderBy('createdAt', descending: true).limit(1000).snapshots(),
       builder: (context, snap) {
         List<String> top5 = [];
         if (snap.hasData) {
@@ -778,39 +954,33 @@ class _PopularSearchTop5 extends StatelessWidget {
             if (q.isEmpty) continue;
             counts[q] = (counts[q] ?? 0) + 1;
           }
-          final sorted = counts.keys.toList()
-            ..sort((a, b) =>
-                (counts[b]!).compareTo(counts[a]!));
-          top5 = sorted.take(5).toList();
+          top5 = counts.keys.toList()..sort((a, b) => (counts[b]!).compareTo(counts[a]!));
+          top5 = top5.take(5).toList();
         }
         if (top5.isEmpty) top5 = fallback;
 
         return SingleChildScrollView(
           scrollDirection: Axis.horizontal,
+          physics: const BouncingScrollPhysics(),
           child: Row(
             children: List.generate(top5.length, (i) {
-              final label = '${i + 1}. ${top5[i]}';
               return Padding(
                 padding: const EdgeInsets.only(right: 8),
-                child: OutlinedButton(
-                  style: OutlinedButton.styleFrom(
-                    minimumSize: const Size(0, 34),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
+                child: InkWell(
+                  onTap: () => onPick?.call(top5[i]),
+                  borderRadius: BorderRadius.circular(20),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isDark ? const Color(0xFF22252A) : Colors.black.withOpacity(0.04),
+                      borderRadius: BorderRadius.circular(20),
                     ),
-                    side: const BorderSide(
-                      color: Color(0xffd0d0d0),
-                    ),
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(16),
-                    ),
-                  ),
-                  onPressed: () => onPick?.call(top5[i]),
-                  child: Text(
-                    label,
-                    style: const TextStyle(
-                      fontWeight: FontWeight.w700,
+                    child: Row(
+                      children: [
+                        Text('${i + 1}', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.4), fontWeight: FontWeight.w900, fontSize: 13)),
+                        const SizedBox(width: 6),
+                        Text(top5[i], style: TextStyle(color: theme.colorScheme.onSurface, fontWeight: FontWeight.w700, fontSize: 14)),
+                      ],
                     ),
                   ),
                 ),
@@ -823,87 +993,158 @@ class _PopularSearchTop5 extends StatelessWidget {
   }
 }
 
-/* ---------------------- 랜덤(캐시 유지) 그리드 ---------------------- */
+/* ---------------------- 핀터레스트 그리드 ---------------------- */
+
+String _pickThumbRaw(Map<String, dynamic> data) {
+  final a = (data['thumbUrl'] ?? '').toString().trim();
+  if (a.isNotEmpty) return a;
+  final b = (data['thumbnailUrl'] ?? '').toString().trim();
+  if (b.isNotEmpty) return b;
+  final list = data['thumbImages'];
+  if (list is List && list.isNotEmpty) return (list.first ?? '').toString().trim();
+  return (data['imageUrl'] ?? '').toString().trim();
+}
+
+class _PinterestGrid extends StatelessWidget {
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs;
+  final ThemeData theme;
+  final bool isDark;
+
+  const _PinterestGrid({super.key, required this.docs, required this.theme, required this.isDark});
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.of(context).size.width;
+    int crossAxisCount = (!kIsWeb || width < 600) ? 2 : (width >= 1200 ? 5 : 4);
+
+    return SliverPadding(
+      padding: const EdgeInsets.symmetric(horizontal: 12),
+      sliver: SliverMasonryGrid.count(
+        crossAxisCount: crossAxisCount,
+        mainAxisSpacing: 24,
+        crossAxisSpacing: 12,
+        childCount: docs.length,
+        itemBuilder: (context, i) {
+          final data = docs[i].data();
+          final docId = docs[i].id;
+          final img = buildThumbUrl(_pickThumbRaw(data));
+          final title = (data['title'] ?? '').toString();
+          final randomHeight = 180.0 + Random(docId.hashCode).nextInt(160);
+
+          return _FadedTile(
+            onTap: () => PostOverlay.show(context, docs: docs, startIndex: i),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  height: randomHeight,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [BoxShadow(color: isDark ? Colors.black45 : Colors.black12, blurRadius: 8, offset: const Offset(0, 4))],
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(16),
+                    child: CachedNetworkImage(
+                      imageUrl: img,
+                      fit: BoxFit.cover,
+                      fadeInDuration: const Duration(milliseconds: 150),
+                      placeholder: (_, __) => ColoredBox(color: isDark ? const Color(0xFF2A2F38) : const Color(0xFFE0E0E0)),
+                      errorWidget: (_, __, ___) => ColoredBox(color: isDark ? const Color(0xFF1A1D22) : Colors.black12),
+                    ),
+                  ),
+                ),
+                if (title.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: Text(
+                      title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: 14.5, fontWeight: FontWeight.w800, color: theme.colorScheme.onSurface, height: 1.3, letterSpacing: -0.3),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
 
 class _RandomExploreGrid extends StatelessWidget {
   final bool forceLoading;
   final String? brandFilterKor;
   final String? categoryFilterCode;
+  final ThemeData theme;
+  final bool isDark;
 
   const _RandomExploreGrid({
+    super.key,
     this.forceLoading = false,
     this.brandFilterKor,
     this.categoryFilterCode,
+    required this.theme,
+    required this.isDark,
   });
 
   @override
   Widget build(BuildContext context) {
     if (forceLoading) {
-      return const SizedBox(
-        height: 220,
-        child: Center(
-          child: CircularProgressIndicator(),
+      return SliverToBoxAdapter(
+        child: SizedBox(
+          height: 220,
+          child: Center(child: CircularProgressIndicator(color: theme.colorScheme.onSurface)),
         ),
       );
     }
+
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('posts')
-          .orderBy('createdAt', descending: true)
-          .limit(150)
-          .snapshots(),
+      stream: FirebaseFirestore.instance.collection('posts').orderBy('createdAt', descending: true).limit(150).snapshots(),
       builder: (context, snap) {
-        if (!snap.hasData) return const SizedBox();
+        if (!snap.hasData) return const SliverToBoxAdapter(child: SizedBox());
+
         final docs = snap.data!.docs;
 
         _SearchCache.shuffledIds ??= () {
-          final ids = docs.map((d) => d.id).toList()
-            ..shuffle(Random());
+          final ids = docs.map((d) => d.id).toList()..shuffle(Random());
           return ids;
         }();
 
         final byId = {for (final d in docs) d.id: d};
         var inOrder = _SearchCache.shuffledIds!
             .map((id) => byId[id])
-            .whereType<
-            QueryDocumentSnapshot<Map<String, dynamic>>>()
+            .whereType<QueryDocumentSnapshot<Map<String, dynamic>>>()
             .toList();
 
         inOrder = inOrder.where((d) {
           final m = d.data();
-          if (brandFilterKor != null &&
-              brandFilterKor!.isNotEmpty &&
-              (m['brand'] ?? '').toString() != brandFilterKor) {
-            return false;
-          }
-          if (categoryFilterCode != null &&
-              categoryFilterCode!.isNotEmpty &&
-              (m['category'] ?? '').toString() !=
-                  categoryFilterCode) {
-            return false;
-          }
+          if (brandFilterKor != null && brandFilterKor!.isNotEmpty && (m['brand'] ?? '').toString() != brandFilterKor) return false;
+          if (categoryFilterCode != null && categoryFilterCode!.isNotEmpty && (m['category'] ?? '').toString() != categoryFilterCode) return false;
           return true;
         }).toList();
 
         if (inOrder.isEmpty) {
-          return const Padding(
-            padding: EdgeInsets.only(top: 40.0),
-            child: Center(
-              child: Text(
-                '조건에 맞는 게시물이 없습니다.',
-                style: TextStyle(color: Colors.black54),
+          return SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 40.0),
+              child: Center(
+                child: Text(
+                  '조건에 맞는 게시물이 없습니다.',
+                  style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                ),
               ),
             ),
           );
         }
 
-        return _PostGrid(docs: inOrder);
+        return _PinterestGrid(docs: inOrder, theme: theme, isDark: isDark);
       },
     );
   }
 }
-
-/* ---------------------- 카테고리/브랜드 인식 검색 ---------------------- */
 
 const Map<String, List<String>> _kCatKeywords = {
   'ring': ['반지', '링', 'ring'],
@@ -921,11 +1162,7 @@ class _ParsedQuery {
 
 _ParsedQuery _parseQuery(String q) {
   final lower = q.toLowerCase().trim();
-  final rawTokens = lower
-      .split(RegExp(r'\s+'))
-      .where((e) => e.isNotEmpty)
-      .toList();
-
+  final rawTokens = lower.split(RegExp(r'\s+')).where((e) => e.isNotEmpty).toList();
   final catCodes = <String>{};
   final others = <String>{};
 
@@ -946,42 +1183,29 @@ class _SearchResultGrid extends StatelessWidget {
   final String query;
   final String? brandFilterKor;
   final String? categoryFilterCode;
+  final ThemeData theme;
+  final bool isDark;
 
   const _SearchResultGrid({
+    super.key,
     required this.query,
     this.brandFilterKor,
     this.categoryFilterCode,
+    required this.theme,
+    required this.isDark,
   });
 
   bool _textHit(Map<String, dynamic> m, String token) {
     final t = token.toLowerCase();
-    return (m['title'] ?? '')
-        .toString()
-        .toLowerCase()
-        .contains(t) ||
-        (m['description'] ?? '')
-            .toString()
-            .toLowerCase()
-            .contains(t) ||
-        (m['brand'] ?? '')
-            .toString()
-            .toLowerCase()
-            .contains(t) ||
-        (m['brandEng'] ?? '')
-            .toString()
-            .toLowerCase()
-            .contains(t);
+    return (m['title'] ?? '').toString().toLowerCase().contains(t) ||
+        (m['description'] ?? '').toString().toLowerCase().contains(t) ||
+        (m['brand'] ?? '').toString().toLowerCase().contains(t) ||
+        (m['brandEng'] ?? '').toString().toLowerCase().contains(t);
   }
 
   bool _match(Map<String, dynamic> m, _ParsedQuery pq) {
     final cat = (m['category'] ?? '').toString().toLowerCase();
-
-    if (pq.catCodes.isNotEmpty) {
-      final catOk = pq.catCodes.contains(cat);
-      final textOk = pq.tokens.every((t) => _textHit(m, t));
-      return catOk && textOk;
-    }
-
+    if (pq.catCodes.isNotEmpty) return pq.catCodes.contains(cat) && pq.tokens.every((t) => _textHit(m, t));
     if (pq.tokens.isEmpty) return true;
     return pq.tokens.every((t) => _textHit(m, t));
   }
@@ -991,149 +1215,66 @@ class _SearchResultGrid extends StatelessWidget {
     final parsed = _parseQuery(query);
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: FirebaseFirestore.instance
-          .collection('posts')
-          .orderBy('createdAt', descending: true)
-          .limit(60)
-          .snapshots(),
+      stream: FirebaseFirestore.instance.collection('posts').orderBy('createdAt', descending: true).limit(60).snapshots(),
       builder: (context, snap) {
-        if (!snap.hasData) return const SizedBox();
-        var filtered = snap.data!.docs.where((d) {
+        if (!snap.hasData) return const SliverToBoxAdapter(child: SizedBox());
+
+        final filtered = snap.data!.docs.where((d) {
           final m = d.data();
           if (!_match(m, parsed)) return false;
-
-          if (brandFilterKor != null &&
-              brandFilterKor!.isNotEmpty &&
-              (m['brand'] ?? '').toString() != brandFilterKor) {
-            return false;
-          }
-          if (categoryFilterCode != null &&
-              categoryFilterCode!.isNotEmpty &&
-              (m['category'] ?? '').toString() !=
-                  categoryFilterCode) {
-            return false;
-          }
+          if (brandFilterKor != null && brandFilterKor!.isNotEmpty && (m['brand'] ?? '').toString() != brandFilterKor) return false;
+          if (categoryFilterCode != null && categoryFilterCode!.isNotEmpty && (m['category'] ?? '').toString() != categoryFilterCode) return false;
           return true;
         }).toList();
 
         if (filtered.isEmpty) {
-          return const Padding(
-            padding: EdgeInsets.only(top: 40.0),
-            child: Center(
-              child: Text(
-                '검색 결과가 없습니다.',
-                style: TextStyle(color: Colors.black54),
+          return SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 40.0),
+              child: Center(
+                child: Text(
+                  '검색 결과가 없습니다.',
+                  style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.5)),
+                ),
               ),
             ),
           );
         }
-        return _PostGrid(docs: filtered);
+
+        return _PinterestGrid(docs: filtered, theme: theme, isDark: isDark);
       },
     );
   }
 }
 
-/* ------------------------------ 공통 그리드 ------------------------------ */
+class _FadedTile extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onTap;
+  const _FadedTile({super.key, required this.child, required this.onTap});
 
-class _PostGrid extends StatelessWidget {
-  final List<QueryDocumentSnapshot<Map<String, dynamic>>> docs;
-  const _PostGrid({required this.docs});
+  @override
+  State<_FadedTile> createState() => _FadedTileState();
+}
+
+class _FadedTileState extends State<_FadedTile> {
+  bool _down = false;
 
   @override
   Widget build(BuildContext context) {
-    return GridView.builder(
-      padding: EdgeInsets.zero,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate:
-      const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 3,
-        mainAxisSpacing: 0,
-        crossAxisSpacing: 0,
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _down = true),
+      onTapCancel: () => setState(() => _down = false),
+      onTapUp: (_) {
+        setState(() => _down = false);
+        widget.onTap();
+      },
+      child: AnimatedScale(
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOutBack,
+        scale: _down ? 0.96 : 1.0,
+        child: widget.child,
       ),
-      itemCount: docs.length,
-      itemBuilder: (ctx, i) {
-        final m = docs[i].data();
-        final img = (m['thumbUrl'] ??
-            m['mediumUrl'] ??
-            m['imageUrl'] ??
-            '')
-            .toString();
-        return GestureDetector(
-          onTap: () =>
-              PostOverlay.show(ctx, docs: docs, startIndex: i),
-          child: _ProgressImage(url: img),
-        );
-      },
-    );
-  }
-}
-
-String _optimizeGridImageUrl(String url) {
-  if (url.isEmpty) return url;
-  const marker = '/upload/';
-  final idx = url.indexOf(marker);
-  if (idx == -1) return url;
-  final before = url.substring(0, idx + marker.length);
-  final after = url.substring(idx + marker.length);
-
-  if (after.startsWith('f_auto') || after.startsWith('q_auto')) {
-    return url;
-  }
-
-  return '$before'
-      'f_auto,q_auto:eco,w_720/'
-      '$after';
-}
-
-class _ProgressImage extends StatelessWidget {
-  final String url;
-  const _ProgressImage({required this.url});
-
-  @override
-  Widget build(BuildContext context) {
-    final realUrl = _optimizeGridImageUrl(url);
-
-    return Image.network(
-      realUrl,
-      fit: BoxFit.cover,
-      loadingBuilder: (context, child, loadingProgress) {
-        if (loadingProgress == null) return child;
-        final total = loadingProgress.expectedTotalBytes;
-        final loaded = loadingProgress.cumulativeBytesLoaded;
-        final percent =
-        (total != null && total > 0) ? (loaded / total) : null;
-        return Container(
-          color: const Color(0xfff5f5f5),
-          child: Center(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const SizedBox(
-                  width: 26,
-                  height: 26,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                  ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  percent == null
-                      ? '로딩중...'
-                      : '${(percent * 100).clamp(0, 100).toStringAsFixed(0)}%',
-                  style: const TextStyle(
-                    fontSize: 12,
-                    color: Colors.black54,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-      errorBuilder: (_, __, ___) =>
-          Container(color: Colors.grey[200]),
     );
   }
 }

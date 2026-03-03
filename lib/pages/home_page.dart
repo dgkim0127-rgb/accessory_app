@@ -1,28 +1,36 @@
-// lib/pages/home_page.dart  ✅ 최종 (A안: 360px 썸네일 + Cloudinary 강한 압축)
-// - 슬라이더와 그리드가 같은 Firestore 스냅샷을 사용 → 중복 쿼리 제거
-// - 스냅샷 도착하는 순간, 인기/최신/추천/랜덤 슬라이드 이미지 즉시 표시
-// - 로딩 전에는 슬라이더/그리드 둘 다 스켈레톤 박스만 보여줌 (하얀 화면 X)
-// - 썸네일: Cloudinary 360x360, f_auto + q_auto:low (강한 압축)
+// lib/pages/home_page.dart ✅ 최종(요청 반영)
+// ✅ 1) 슬라이더 큰 제목: 해당 게시물 title
+// ✅ 2) 로딩 체감 개선
+//   - 최초 로드: 모바일 20 / 웹 40 (빠르게 뜸)
+//   - 추가 로드: 모바일 40 / 웹 80 (스크롤 시 더 가져옴)
+//   - 캐시 먼저 보여주고 서버로 갱신
 
 import 'dart:async';
 import 'dart:math';
+import 'dart:ui';
 
 import 'package:cached_network_image/cached_network_image.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:reorderable_grid_view/reorderable_grid_view.dart';
+import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
 
-import '../core/loading.dart';
-import '../widgets/post_overlay.dart';
 import '../core/announcement_popup_manager.dart';
+import '../utils/cloudinary_image_utils.dart';
+import '../widgets/post_overlay.dart';
 
-// Firestore에서 한 번에 가져올 게시물 수
-const int _kMaxDocsMobile = 60;
-const int _kMaxDocsWeb = 120;
+const int _kInitialMobile = 20; // ✅ 최초 로드 줄임
+const int _kInitialWeb = 40;
+
+const int _kMoreMobile = 40; // ✅ 추가 로드는 넉넉히
+const int _kMoreWeb = 80;
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  final bool isAdmin;
+  const HomePage({super.key, this.isAdmin = false});
+
   @override
   State<HomePage> createState() => _HomePageState();
 }
@@ -31,49 +39,183 @@ class _HomePageState extends State<HomePage> {
   static const int _kBase = 10000;
 
   late final PageController _pageCtrl = PageController(
-    viewportFraction: 1.0,
+    viewportFraction: kIsWeb ? 0.7 : 0.85,
     initialPage: _kBase,
   );
 
+  final ScrollController _scrollCtrl = ScrollController();
+
   Timer? _timer;
-
-  // 로딩 화면에서 봤던 사진 (있으면 슬라이더 첫 장으로 사용)
-  _SlideItem? _previewSlide;
-
-  // 프리캐시한 썸네일 목록
   final Set<String> _prefetchedThumbs = {};
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _adminDocs = [];
+  Timer? _saveDebounce;
+  bool _forcedServerOnce = false;
+
+  bool _isReorderMode = false;
+
+  final List<QueryDocumentSnapshot<Map<String, dynamic>>> _docs = [];
+  DocumentSnapshot<Map<String, dynamic>>? _last;
+  bool _hasMore = true;
+  bool _loading = false;
+  bool _loadingMore = false;
+
+  final ValueNotifier<int> _currentPageNotifier = ValueNotifier<int>(0);
+
+  int get _initialPageSize => kIsWeb ? _kInitialWeb : _kInitialMobile;
+  int get _morePageSize => kIsWeb ? _kMoreWeb : _kMoreMobile;
 
   @override
   void initState() {
     super.initState();
-
-    final preview = LoadingOverlay.consumePreview();
-    if (preview != null && preview.urls.isNotEmpty) {
-      _previewSlide = _SlideItem(
-        label: '로딩에서 봤던 사진',
-        imageUrl: _optimizeCloudinaryUrl(preview.urls.first),
-        doc: null, // 단일 URL만 있는 경우 → 탭해도 아무 동작 안 함
-      );
-    }
-
     _startAuto();
+    _scrollCtrl.addListener(_onScroll);
+    _pageCtrl.addListener(() {
+      if (_pageCtrl.page != null) {
+        _currentPageNotifier.value = _pageCtrl.page!.round() % 4;
+      }
+    });
+    _resetAndLoad();
   }
 
   @override
   void dispose() {
+    _saveDebounce?.cancel();
     _timer?.cancel();
     _pageCtrl.dispose();
+    _scrollCtrl.dispose();
+    _currentPageNotifier.dispose();
     super.dispose();
   }
 
-  Future<void> _refresh() async {
-    try {
-      await FirebaseFirestore.instance
-          .collection('posts')
-          .orderBy('createdAt', descending: true)
+  void _onScroll() {
+    if (!_scrollCtrl.hasClients) return;
+    final pos = _scrollCtrl.position;
+    if (pos.pixels >= pos.maxScrollExtent - 600) {
+      _loadMore();
+    }
+  }
+
+  Query<Map<String, dynamic>> _baseQuery() {
+    return FirebaseFirestore.instance
+        .collection('posts')
+        .orderBy('sortKey', descending: true);
+  }
+
+  Future<void> _resetAndLoad() async {
+    setState(() {
+      _loading = true;
+      _loadingMore = false;
+      _hasMore = true;
+      _docs.clear();
+      _adminDocs.clear();
+      _last = null;
+    });
+
+    // 서버 워밍업
+    if (!_forcedServerOnce) {
+      _forcedServerOnce = true;
+      _baseQuery()
           .limit(1)
-          .get(const GetOptions(source: Source.server));
-    } catch (_) {}
+          .get(const GetOptions(source: Source.server))
+          .catchError((_) {});
+    }
+
+    await _loadInitial();
+
+    if (mounted) setState(() => _loading = false);
+  }
+
+  // ✅ 변경: "캐시 먼저" -> "서버로 갱신" + ✅ 최초 로드 수 줄임
+  Future<void> _loadInitial() async {
+    try {
+      // 1) 캐시에서 먼저 가져와서 즉시 화면에 뿌림
+      try {
+        final cacheQs = await _baseQuery()
+            .limit(_initialPageSize)
+            .get(const GetOptions(source: Source.cache));
+
+        final cacheItems = cacheQs.docs;
+        if (mounted && cacheItems.isNotEmpty) {
+          setState(() {
+            _docs
+              ..clear()
+              ..addAll(cacheItems);
+            _last = cacheItems.last;
+            _hasMore = cacheItems.length >= _initialPageSize;
+          });
+          _afterDocsChanged();
+        }
+      } catch (_) {}
+
+      // 2) 서버 최신 데이터로 갱신
+      final serverQs = await _baseQuery()
+          .limit(_initialPageSize)
+          .get(const GetOptions(source: Source.serverAndCache));
+      final items = serverQs.docs;
+
+      if (!mounted) return;
+
+      setState(() {
+        _docs
+          ..clear()
+          ..addAll(items);
+        _last = items.isNotEmpty ? items.last : null;
+        _hasMore = items.length >= _initialPageSize;
+      });
+
+      _afterDocsChanged();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('불러오기 실패: $e')));
+    }
+  }
+
+  // ✅ 변경: 추가 로드는 더 큰 pageSize로
+  Future<void> _loadMore() async {
+    if (_loading || _loadingMore || !_hasMore) return;
+    if (_last == null) return;
+
+    setState(() => _loadingMore = true);
+
+    try {
+      final qs = await _baseQuery()
+          .startAfterDocument(_last!)
+          .limit(_morePageSize)
+          .get(); // 기본(serverAndCache)
+      final items = qs.docs;
+
+      if (!mounted) return;
+
+      setState(() {
+        _docs.addAll(items);
+        _last = items.isNotEmpty ? items.last : _last;
+        _hasMore = items.length >= _morePageSize;
+        _loadingMore = false;
+      });
+
+      _afterDocsChanged();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _loadingMore = false);
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('추가 로드 실패: $e')));
+    }
+  }
+
+  void _afterDocsChanged() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _prefetchThumbs(_docs);
+      _seedMissingSortKeys(_docs);
+    });
+
+    if (widget.isAdmin) {
+      _adminDocs = List.of(_docs);
+    }
+  }
+
+  Future<void> _refresh() async {
+    await _resetAndLoad();
     await Future<void>.delayed(const Duration(milliseconds: 150));
   }
 
@@ -84,379 +226,673 @@ class _HomePageState extends State<HomePage> {
       final current = (_pageCtrl.page ?? _kBase.toDouble()).round();
       _pageCtrl.animateToPage(
         current + 1,
-        duration: const Duration(milliseconds: 520),
-        curve: Curves.easeInOut,
+        duration: const Duration(milliseconds: 800),
+        curve: Curves.fastOutSlowIn,
       );
     });
   }
 
-  // 슬라이드 탭 시 동작
-  Future<void> _openSlide(_SlideItem item) async {
-    // 로딩에서 본 사진, doc 없는 플레이스홀더는 탭해도 아무 동작 없음
-    if (item.doc == null) return;
-
-    try {
-      await PostOverlay.show(
-        context,
-        docs: [item.doc!],
-        startIndex: 0,
-      );
-    } catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(SnackBar(content: Text('불러오기 실패: $e')));
+  String _pickThumbRaw(Map<String, dynamic> data) {
+    final a = (data['thumbUrl'] ?? '').toString().trim();
+    if (a.isNotEmpty) return a;
+    final b = (data['thumbnailUrl'] ?? '').toString().trim();
+    if (b.isNotEmpty) return b;
+    final list = data['thumbImages'];
+    if (list is List && list.isNotEmpty) {
+      final u = (list.first ?? '').toString().trim();
+      if (u.isNotEmpty) return u;
     }
+    return (data['imageUrl'] ?? '').toString().trim();
   }
 
-  // 썸네일 프리캐시 (첫 화면에 보일 가능성 높은 9개만)
+  String _pickSliderRaw(Map<String, dynamic> data) {
+    final m = (data['mediumUrl'] ?? '').toString().trim();
+    if (m.isNotEmpty) return m;
+    final list = data['mediumImages'];
+    if (list is List && list.isNotEmpty) {
+      final u = (list.first ?? '').toString().trim();
+      if (u.isNotEmpty) return u;
+    }
+    final raw = (data['imageUrl'] ?? '').toString().trim();
+    if (raw.isNotEmpty) return raw;
+    return (data['thumbnailUrl'] ?? '').toString().trim();
+  }
+
   void _prefetchThumbs(List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
     if (!mounted) return;
-    final targets = docs.take(9).toList();
-
-    for (final d in targets) {
-      final data = d.data();
-      final raw =
-      (data['thumbnailUrl'] ?? data['imageUrl'] ?? '').toString().trim();
+    for (final d in docs.take(12)) {
+      final raw = _pickThumbRaw(d.data());
       if (raw.isEmpty) continue;
-
-      final url = _optimizeCloudinaryUrl(raw);
-      if (_prefetchedThumbs.contains(url)) continue;
-      _prefetchedThumbs.add(url);
-
-      precacheImage(CachedNetworkImageProvider(url), context);
+      final url = buildThumbUrl(raw);
+      if (_prefetchedThumbs.add(url)) {
+        precacheImage(CachedNetworkImageProvider(url), context);
+      }
     }
   }
 
-  // Firestore docs 로부터 인기/최신/추천/랜덤 슬라이드 구성
-  List<_SlideItem> _buildSlidesFromDocs(
-      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
-      ) {
-    final list = List<QueryDocumentSnapshot<Map<String, dynamic>>>.from(docs);
-    if (list.isEmpty) {
-      return _buildPlaceholderSlides();
+  Future<void> _seedMissingSortKeys(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) async {
+    if (!widget.isAdmin) return;
+
+    final batch = FirebaseFirestore.instance.batch();
+    bool hasWork = false;
+
+    for (final d in docs) {
+      final data = d.data();
+      if (data['sortKey'] == null) {
+        int base = DateTime.now().millisecondsSinceEpoch;
+        final createdAt = data['createdAt'];
+        if (createdAt is Timestamp) base = createdAt.millisecondsSinceEpoch;
+        batch.update(d.reference, {'sortKey': base});
+        hasWork = true;
+      }
     }
+
+    if (!hasWork) return;
+    try {
+      await batch.commit();
+    } catch (_) {}
+  }
+
+  List<_SlideItem> _buildSlidesFromDocs(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    if (docs.isEmpty) return _buildPlaceholderSlides();
+
+    int tsOf(dynamic v) => v is Timestamp ? v.millisecondsSinceEpoch : 0;
 
     QueryDocumentSnapshot<Map<String, dynamic>>? popular;
     QueryDocumentSnapshot<Map<String, dynamic>>? recent;
-    QueryDocumentSnapshot<Map<String, dynamic>>? featured;
-    QueryDocumentSnapshot<Map<String, dynamic>>? randomDoc;
+    QueryDocumentSnapshot<Map<String, dynamic>>? updated;
 
-    // 최신: 이미 createdAt desc 로 정렬된 상태라고 가정 → 첫 번째
-    recent = list.first;
+    int bestCreated = -1;
+    for (final d in docs) {
+      final c = tsOf(d.data()['createdAt']);
+      if (c > bestCreated) {
+        bestCreated = c;
+        recent = d;
+      }
+    }
+    recent ??= docs.first;
 
-    // 인기: likes 가 가장 큰 것
     int maxLikes = -1;
-    for (final d in list) {
-      final data = d.data();
-      final likes = (data['likes'] ?? 0);
-      final likesInt =
-      likes is int ? likes : int.tryParse(likes.toString()) ?? 0;
+    for (final d in docs) {
+      final likes = d.data()['likes'] ?? 0;
+      final likesInt = likes is int ? likes : int.tryParse(likes.toString()) ?? 0;
       if (likesInt > maxLikes) {
         maxLikes = likesInt;
         popular = d;
       }
-      // 추천: featured == true 중 첫 번째
-      if (featured == null && data['featured'] == true) {
-        featured = d;
+    }
+    popular ??= recent;
+
+    int bestUpdated = -1;
+    for (final d in docs) {
+      int t = tsOf(d.data()['updatedAt']);
+      if (t == 0) t = tsOf(d.data()['createdAt']);
+      if (t > bestUpdated) {
+        bestUpdated = t;
+        updated = d;
       }
     }
+    updated ??= recent;
 
-    // 랜덤: 앞쪽 20개 정도에서 랜덤 선택
-    final pool = list.take(min(20, list.length)).toList();
-    randomDoc = pool[Random().nextInt(pool.length)];
+    final pool = docs.take(min(20, docs.length)).toList();
+    final randomDoc = pool[Random().nextInt(pool.length)];
 
-    final out = <_SlideItem>[];
-
-    void addDoc(QueryDocumentSnapshot<Map<String, dynamic>>? d, String label) {
-      if (d == null) return;
-      final data = d.data();
-      final raw = (data['thumbnailUrl'] ??
-          data['imageUrl'] ??
-          'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800')
-          .toString();
-      final img = _optimizeCloudinaryUrl(raw);
-
-      out.add(
-        _SlideItem(
-          label: label,
-          imageUrl: img,
-          doc: d,
-        ),
-      );
+    String pickSliderImage(QueryDocumentSnapshot<Map<String, dynamic>> d) {
+      final raw = _pickSliderRaw(d.data());
+      if (raw.isEmpty) return '';
+      return buildSliderUrl(raw);
     }
 
-    // 0. 로딩에서 본 사진이 있으면 맨 앞에
-    if (_previewSlide != null) {
-      out.add(_previewSlide!);
+    String titleOf(QueryDocumentSnapshot<Map<String, dynamic>> d, String fallback) {
+      final t = (d.data()['title'] ?? '').toString().trim();
+      return t.isNotEmpty ? t : fallback;
     }
 
-    // 1. 인기 / 최신 / 추천 / 랜덤
-    addDoc(popular ?? recent, '인기 게시물');
-    addDoc(recent, '최신 게시물');
-    addDoc(featured ?? recent, '추천 게시물');
-    addDoc(randomDoc ?? recent, '랜덤 게시물');
-
-    // 중복 제거 + 최대 5개까지만
-    final seenIds = <String>{};
-    final unique = <_SlideItem>[];
-
-    for (final s in out) {
-      final id = s.doc?.id ?? 'no_doc_${s.label}_${s.imageUrl}';
-      if (seenIds.add(id)) {
-        unique.add(s);
-      }
-    }
-
-    if (unique.isEmpty) {
-      return _buildPlaceholderSlides();
-    }
-
-    return unique.take(5).toList();
+    return [
+      _SlideItem(
+        label: titleOf(popular!, '인기 컬렉션'),
+        subLabel: '인기 컬렉션 · 지금 가장 핫한 주얼리',
+        imageUrl: pickSliderImage(popular!),
+        doc: popular,
+      ),
+      _SlideItem(
+        label: titleOf(recent!, '신상 컬렉션'),
+        subLabel: '신상 컬렉션 · 방금 올라온 새로운 디자인',
+        imageUrl: pickSliderImage(recent!),
+        doc: recent,
+      ),
+      _SlideItem(
+        label: titleOf(updated!, '업데이트'),
+        subLabel: '업데이트 · 새롭게 단장한 게시물',
+        imageUrl: pickSliderImage(updated!),
+        doc: updated,
+      ),
+      _SlideItem(
+        label: titleOf(randomDoc, '추천 컬렉션'),
+        subLabel: '추천 컬렉션 · 르네가 추천하는 주얼리',
+        imageUrl: pickSliderImage(randomDoc),
+        doc: randomDoc,
+      ),
+    ];
   }
 
-  // Firestore 데이터가 아직 없을 때 보여줄 기본 슬라이드 (색 박스 + 라벨)
-  List<_SlideItem> _buildPlaceholderSlides() {
-    return [
-      _SlideItem(label: '인기 게시물', imageUrl: '', doc: null),
-      _SlideItem(label: '최신 게시물', imageUrl: '', doc: null),
-      _SlideItem(label: '추천 게시물', imageUrl: '', doc: null),
-      _SlideItem(label: '랜덤 게시물', imageUrl: '', doc: null),
-    ];
+  List<_SlideItem> _buildPlaceholderSlides() => const [
+    _SlideItem(label: '인기 컬렉션', subLabel: '인기 게시물', imageUrl: '', doc: null),
+    _SlideItem(label: '신상 컬렉션', subLabel: '최근 게시물', imageUrl: '', doc: null),
+    _SlideItem(label: '업데이트', subLabel: '수정된 게시물', imageUrl: '', doc: null),
+    _SlideItem(label: '추천 컬렉션', subLabel: '랜덤 게시물', imageUrl: '', doc: null),
+  ];
+
+  void _scheduleSaveSortKeys(
+      List<QueryDocumentSnapshot<Map<String, dynamic>>> ordered) {
+    _saveDebounce?.cancel();
+    _saveDebounce = Timer(const Duration(milliseconds: 550), () async {
+      try {
+        final now = DateTime.now().millisecondsSinceEpoch;
+        final batch = FirebaseFirestore.instance.batch();
+        for (int i = 0; i < ordered.length; i++) {
+          batch.update(ordered[i].reference, {'sortKey': now - i});
+        }
+        await batch.commit();
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('순서 저장됨')));
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(SnackBar(content: Text('순서 저장 실패: $e')));
+        }
+      }
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
+    final bgColor = theme.scaffoldBackgroundColor;
+    final skeletonColor =
+    isDark ? const Color(0xFF2A2F38) : const Color(0xFFE0E0E0);
+    final errorBgColor =
+    isDark ? const Color(0xFF1A1D22) : Colors.black12;
+
     return AnnouncementPopupManager(
       child: Scaffold(
-        backgroundColor: Colors.white,
-        body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-          stream: FirebaseFirestore.instance
-              .collection('posts')
-              .orderBy('createdAt', descending: true)
-              .limit(kIsWeb ? _kMaxDocsWeb : _kMaxDocsMobile)
-              .snapshots(),
-          builder: (context, snap) {
-            final width = MediaQuery.of(context).size.width;
-            final square = width * 0.7;
+        backgroundColor: bgColor,
+        floatingActionButton: widget.isAdmin
+            ? FloatingActionButton.extended(
+          onPressed: () => setState(() => _isReorderMode = !_isReorderMode),
+          elevation: 4,
+          icon: Icon(_isReorderMode ? Icons.check : Icons.swap_vert,
+              size: 20),
+          label: Text(
+            _isReorderMode ? '정렬 완료' : '순서 변경',
+            style:
+            const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+          ),
+          backgroundColor: isDark ? Colors.white : Colors.black,
+          foregroundColor: isDark ? Colors.black : Colors.white,
+        )
+            : null,
+        body: LayoutBuilder(
+          builder: (context, constraints) {
+            final width = constraints.maxWidth;
 
-            // ───────── 슬라이드 데이터 구성 ─────────
-            final docs = snap.data?.docs ??
-                const <QueryDocumentSnapshot<Map<String, dynamic>>>[];
-            final hasData = snap.hasData && docs.isNotEmpty;
-
-            if (hasData) {
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                _prefetchThumbs(docs);
-              });
-            }
+            final double slideHeight =
+            kIsWeb ? min(width * 0.5, 500.0) : width * 1.0;
 
             final slides =
-            hasData ? _buildSlidesFromDocs(docs) : _buildPlaceholderSlides();
+            _docs.isNotEmpty ? _buildSlidesFromDocs(_docs) : _buildPlaceholderSlides();
+            final int slideCount = slides.isEmpty ? 1 : slides.length;
 
-            // ───────── 슬라이더 Sliver ─────────
             final slider = SliverToBoxAdapter(
               child: Padding(
-                padding: const EdgeInsets.only(top: 10, bottom: 8),
-                child: Center(
-                  child: SizedBox(
-                    width: width,
-                    height: square,
-                    child: Listener(
-                      onPointerDown: (_) => _timer?.cancel(),
-                      onPointerUp: (_) => _startAuto(),
-                      child: ScrollConfiguration(
-                        behavior: const _DragScrollBehavior(),
-                        child: PageView.builder(
-                          controller: _pageCtrl,
-                          physics: const PageScrollPhysics(),
-                          pageSnapping: true,
-                          itemBuilder: (context, raw) {
-                            final len = slides.isEmpty ? 1 : slides.length;
-                            final idx = slides.isEmpty ? 0 : raw % len;
-                            final item = slides[idx];
+                padding: const EdgeInsets.only(top: 16, bottom: 10),
+                child: Column(
+                  children: [
+                    SizedBox(
+                      width: width,
+                      height: slideHeight,
+                      child: Listener(
+                        onPointerDown: (_) => _timer?.cancel(),
+                        onPointerUp: (_) => _startAuto(),
+                        child: ScrollConfiguration(
+                          behavior: const _DragScrollBehavior(),
+                          child: PageView.builder(
+                            controller: _pageCtrl,
+                            physics: const BouncingScrollPhysics(),
+                            itemBuilder: (context, raw) {
+                              final idx = raw % slideCount;
+                              final item = slides[idx];
 
-                            return Center(
-                              child: SizedBox(
-                                width: square,
-                                height: square,
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(0),
-                                  child: GestureDetector(
-                                    onTap: () => _openSlide(item),
-                                    child: Stack(
-                                      fit: StackFit.expand,
-                                      children: [
-                                        if (item.imageUrl.isEmpty)
-                                        // Firestore 데이터 오기 전: 단순 색 박스
-                                          Container(
-                                            decoration: const BoxDecoration(
-                                              gradient: LinearGradient(
-                                                begin: Alignment.topLeft,
-                                                end: Alignment.bottomRight,
-                                                colors: [
-                                                  Color(0xFF111111),
-                                                  Color(0xFF222222),
-                                                ],
-                                              ),
-                                            ),
-                                          )
-                                        else
-                                          CachedNetworkImage(
-                                            imageUrl: item.imageUrl,
-                                            fit: BoxFit.cover,
-                                            fadeInDuration:
-                                            const Duration(milliseconds: 80),
-                                            placeholder: (_, __) =>
-                                                Container(color: Colors.grey[200]),
-                                            errorWidget: (_, __, ___) => Container(
-                                              color: Colors.grey[200],
-                                              child: const Icon(
-                                                Icons.broken_image_outlined,
-                                                color: Colors.black38,
-                                              ),
-                                            ),
-                                          ),
-                                        Positioned(
-                                          left: 12,
-                                          top: 12,
+                              return AnimatedBuilder(
+                                animation: _pageCtrl,
+                                builder: (context, child) {
+                                  double pageOffset = 0.0;
+                                  double scaleValue = 1.0;
+
+                                  if (_pageCtrl.position.haveDimensions) {
+                                    pageOffset =
+                                        (_pageCtrl.page ?? raw.toDouble()) - raw;
+                                    scaleValue = (1 - (pageOffset.abs() * 0.12))
+                                        .clamp(0.85, 1.0);
+                                  }
+
+                                  return Center(
+                                    child: Transform.scale(
+                                      scale: scaleValue,
+                                      child: GestureDetector(
+                                        onTap: () {
+                                          if (item.doc != null) {
+                                            PostOverlay.show(context,
+                                                docs: [item.doc!],
+                                                startIndex: 0);
+                                          }
+                                        },
+                                        child: ConstrainedBox(
+                                          constraints:
+                                          const BoxConstraints(maxWidth: 800),
                                           child: Container(
-                                            padding: const EdgeInsets.symmetric(
-                                              horizontal: 8,
-                                              vertical: 4,
+                                            margin: const EdgeInsets.symmetric(
+                                                horizontal: 10),
+                                            decoration: BoxDecoration(
+                                              borderRadius:
+                                              BorderRadius.circular(24),
+                                              boxShadow: [
+                                                BoxShadow(
+                                                  color: isDark
+                                                      ? Colors.black54
+                                                      : Colors.black
+                                                      .withOpacity(0.15),
+                                                  blurRadius: 20,
+                                                  offset: const Offset(0, 10),
+                                                )
+                                              ],
                                             ),
-                                            color:
-                                            item.label == '로딩에서 봤던 사진'
-                                                ? Colors.black87
-                                                : Colors.black54,
-                                            child: Text(
-                                              item.label,
-                                              style: const TextStyle(
-                                                color: Colors.white,
-                                                fontSize: 12,
-                                                fontWeight: FontWeight.w700,
+                                            child: ClipRRect(
+                                              borderRadius:
+                                              BorderRadius.circular(24),
+                                              child: Stack(
+                                                fit: StackFit.expand,
+                                                children: [
+                                                  if (item.imageUrl.isNotEmpty)
+                                                    Transform.translate(
+                                                      offset: Offset(
+                                                          pageOffset * width * 0.2,
+                                                          0),
+                                                      child: CachedNetworkImage(
+                                                        imageUrl: item.imageUrl,
+                                                        fit: BoxFit.cover,
+                                                        fadeInDuration:
+                                                        const Duration(
+                                                            milliseconds: 150),
+                                                        placeholder: (_, __) =>
+                                                            ColoredBox(
+                                                                color:
+                                                                skeletonColor),
+                                                        errorWidget:
+                                                            (_, __, ___) =>
+                                                            ColoredBox(
+                                                                color:
+                                                                errorBgColor),
+                                                      ),
+                                                    )
+                                                  else
+                                                    ColoredBox(color: skeletonColor),
+                                                  Positioned(
+                                                    left: 16,
+                                                    right: 16,
+                                                    bottom: 20,
+                                                    child: ClipRRect(
+                                                      borderRadius:
+                                                      BorderRadius.circular(16),
+                                                      child: BackdropFilter(
+                                                        filter: ImageFilter.blur(
+                                                            sigmaX: 12, sigmaY: 12),
+                                                        child: Container(
+                                                          padding:
+                                                          const EdgeInsets.symmetric(
+                                                              horizontal: 20,
+                                                              vertical: 16),
+                                                          decoration: BoxDecoration(
+                                                            color: isDark
+                                                                ? Colors.black
+                                                                .withOpacity(0.3)
+                                                                : Colors.white
+                                                                .withOpacity(0.2),
+                                                            border: Border.all(
+                                                              color: Colors.white
+                                                                  .withOpacity(0.3),
+                                                              width: 0.5,
+                                                            ),
+                                                          ),
+                                                          child: Column(
+                                                            crossAxisAlignment:
+                                                            CrossAxisAlignment.start,
+                                                            mainAxisSize:
+                                                            MainAxisSize.min,
+                                                            children: [
+                                                              Row(
+                                                                children: [
+                                                                  Container(
+                                                                    width: 6,
+                                                                    height: 6,
+                                                                    decoration:
+                                                                    BoxDecoration(
+                                                                      color: isDark
+                                                                          ? Colors.white
+                                                                          : Colors.black,
+                                                                      shape: BoxShape.circle,
+                                                                    ),
+                                                                  ),
+                                                                  const SizedBox(width: 8),
+                                                                  Text(
+                                                                    item.subLabel,
+                                                                    style: TextStyle(
+                                                                      color: isDark
+                                                                          ? Colors.white
+                                                                          .withOpacity(0.9)
+                                                                          : Colors.black87,
+                                                                      fontSize: 13,
+                                                                      fontWeight: FontWeight.w700,
+                                                                      letterSpacing: 0.5,
+                                                                    ),
+                                                                  ),
+                                                                ],
+                                                              ),
+                                                              const SizedBox(height: 6),
+                                                              Text(
+                                                                item.label,
+                                                                maxLines: 2,
+                                                                overflow: TextOverflow.ellipsis,
+                                                                style: TextStyle(
+                                                                  color: isDark
+                                                                      ? Colors.white
+                                                                      : Colors.black,
+                                                                  fontSize: 26,
+                                                                  fontWeight: FontWeight.w900,
+                                                                  letterSpacing: -0.5,
+                                                                ),
+                                                              ),
+                                                            ],
+                                                          ),
+                                                        ),
+                                                      ),
+                                                    ),
+                                                  ),
+                                                ],
                                               ),
                                             ),
                                           ),
                                         ),
-                                      ],
+                                      ),
                                     ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
+                                  );
+                                },
+                              );
+                            },
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 20),
+                    ValueListenableBuilder<int>(
+                      valueListenable: _currentPageNotifier,
+                      builder: (context, currentIndex, child) {
+                        return Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: List.generate(slideCount, (index) {
+                            final isActive = index == currentIndex;
+                            return AnimatedContainer(
+                              duration: const Duration(milliseconds: 300),
+                              curve: Curves.easeOutCubic,
+                              margin: const EdgeInsets.symmetric(horizontal: 4),
+                              width: isActive ? 24 : 8,
+                              height: 8,
+                              decoration: BoxDecoration(
+                                color: isActive
+                                    ? (isDark ? Colors.white : Colors.black)
+                                    : (isDark ? Colors.white24 : Colors.black26),
+                                borderRadius: BorderRadius.circular(4),
+                              ),
+                            );
+                          }),
+                        );
+                      },
+                    ),
+                  ],
                 ),
               ),
             );
 
-            // ───────── 그리드 Sliver ─────────
-            int crossAxisCount;
-            if (!kIsWeb) {
-              crossAxisCount = 3;
-            } else {
-              if (width >= 1200) {
-                crossAxisCount = 6;
-              } else if (width >= 900) {
-                crossAxisCount = 5;
-              } else if (width >= 600) {
-                crossAxisCount = 4;
-              } else {
-                crossAxisCount = 3;
-              }
-            }
+            final int crossAxisCount =
+            (!kIsWeb || width < 600) ? 2 : (width >= 1200 ? 5 : 4);
 
             Widget gridSliver;
+            final bool showMasonry = !widget.isAdmin || !_isReorderMode;
 
-            if (!hasData) {
-              // 데이터 오기 전: 스켈레톤 그리드
-              const skeletonCount = 12;
+            if (_loading && _docs.isEmpty) {
+              // ✅ 스켈레톤도 초기 로드 축소 느낌으로 조금만
               gridSliver = SliverPadding(
-                padding: const EdgeInsets.only(top: 4, bottom: 10),
-                sliver: SliverGrid(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: crossAxisCount,
-                    mainAxisSpacing: 3,
-                    crossAxisSpacing: 3,
-                    childAspectRatio: 1,
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                        (context, i) {
-                      return const ColoredBox(
-                        color: Color(0xFFE0E0E0),
-                      );
-                    },
-                    childCount: skeletonCount,
-                  ),
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                sliver: SliverMasonryGrid.count(
+                  crossAxisCount: crossAxisCount,
+                  mainAxisSpacing: 20,
+                  crossAxisSpacing: 10,
+                  childCount: 6,
+                  itemBuilder: (context, i) {
+                    final randomHeight = 180.0 + Random(i).nextInt(160);
+                    return Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          height: randomHeight,
+                          decoration: BoxDecoration(
+                            color: skeletonColor,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Container(
+                          height: 14,
+                          margin: const EdgeInsets.only(right: 40),
+                          decoration: BoxDecoration(
+                            color: skeletonColor,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
               );
-            } else if (docs.isEmpty) {
-              gridSliver = const SliverFillRemaining(
+            } else if (_docs.isEmpty) {
+              gridSliver = SliverFillRemaining(
                 hasScrollBody: false,
-                child: Center(child: Text('게시물이 없습니다. 아래로 당겨서 새로고침')),
+                child: Center(
+                  child: Text('게시물이 없습니다.', style: theme.textTheme.bodyMedium),
+                ),
               );
-            } else {
+            } else if (!showMasonry) {
+              final list = _adminDocs;
               gridSliver = SliverPadding(
-                padding: const EdgeInsets.only(top: 4, bottom: 10),
-                sliver: SliverGrid(
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: crossAxisCount,
-                    mainAxisSpacing: 3,
-                    crossAxisSpacing: 3,
-                    childAspectRatio: 1,
-                  ),
-                  delegate: SliverChildBuilderDelegate(
-                        (context, i) {
-                      final data = docs[i].data();
-                      final raw = (data['thumbnailUrl'] ??
-                          data['imageUrl'] ??
-                          'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=800')
-                          .toString();
-                      final img = _optimizeCloudinaryUrl(raw);
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
+                sliver: SliverToBoxAdapter(
+                  child: ReorderableGridView.builder(
+                    shrinkWrap: true,
+                    physics: const NeverScrollableScrollPhysics(),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: crossAxisCount,
+                      mainAxisSpacing: 10,
+                      crossAxisSpacing: 10,
+                      childAspectRatio: 0.8,
+                    ),
+                    itemCount: list.length,
+                    dragWidgetBuilder: (index, child) =>
+                        _JellyDragProxy(child: child),
+                    onReorder: (oldIndex, newIndex) {
+                      setState(() {
+                        final item = list.removeAt(oldIndex);
+                        list.insert(newIndex, item);
+                        _docs
+                          ..clear()
+                          ..addAll(list);
+                      });
+                      _scheduleSaveSortKeys(list);
+                    },
+                    itemBuilder: (context, i) {
+                      final d = list[i];
+                      final raw = _pickThumbRaw(d.data());
+                      final img = raw.isEmpty
+                          ? 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800'
+                          : buildThumbUrl(raw);
 
-                      return _FadedTile(
-                        onTap: () =>
-                            PostOverlay.show(context, docs: docs, startIndex: i),
-                        child: CachedNetworkImage(
-                          imageUrl: img,
-                          fit: BoxFit.cover,
-                          fadeInDuration:
-                          const Duration(milliseconds: 80),
-                          placeholder: (_, __) =>
-                          const ColoredBox(color: Color(0xFFE0E0E0)),
-                          errorWidget: (_, __, ___) => const ColoredBox(
-                            color: Colors.black12,
-                            child: Center(
-                              child: Icon(
-                                Icons.broken_image_outlined,
-                                color: Colors.black38,
-                                size: 20,
-                              ),
+                      return ReorderableDelayedDragStartListener(
+                        index: i,
+                        key: ValueKey(d.id),
+                        child: _FadedTile(
+                          onTap: () => PostOverlay.show(context,
+                              docs: list, startIndex: i),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: CachedNetworkImage(
+                              imageUrl: img,
+                              fit: BoxFit.cover,
+                              placeholder: (_, __) =>
+                                  ColoredBox(color: skeletonColor),
+                              errorWidget: (_, __, ___) =>
+                                  ColoredBox(color: errorBgColor),
                             ),
                           ),
                         ),
                       );
                     },
-                    childCount: docs.length,
                   ),
+                ),
+              );
+            } else {
+              gridSliver = SliverPadding(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                sliver: SliverMasonryGrid.count(
+                  crossAxisCount: crossAxisCount,
+                  mainAxisSpacing: 24,
+                  crossAxisSpacing: 12,
+                  childCount: _docs.length,
+                  itemBuilder: (context, i) {
+                    final data = _docs[i].data();
+                    final docId = _docs[i].id;
+
+                    final raw = _pickThumbRaw(data);
+                    final img = raw.isEmpty
+                        ? 'https://images.unsplash.com/photo-1542291026-7eec264c27ff?w=800'
+                        : buildThumbUrl(raw);
+
+                    final title = (data['title'] ?? '').toString();
+                    final randomHeight =
+                        180.0 + Random(docId.hashCode).nextInt(160);
+
+                    return _FadedTile(
+                      onTap: () => PostOverlay.show(context,
+                          docs: _docs, startIndex: i),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Container(
+                            height: randomHeight,
+                            decoration: BoxDecoration(
+                              borderRadius: BorderRadius.circular(16),
+                              boxShadow: [
+                                BoxShadow(
+                                  color:
+                                  isDark ? Colors.black45 : Colors.black12,
+                                  blurRadius: 8,
+                                  offset: const Offset(0, 4),
+                                )
+                              ],
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(16),
+                              child: CachedNetworkImage(
+                                imageUrl: img,
+                                fit: BoxFit.cover,
+                                fadeInDuration:
+                                const Duration(milliseconds: 150),
+                                placeholder: (_, __) =>
+                                    ColoredBox(color: skeletonColor),
+                                errorWidget: (_, __, ___) =>
+                                    ColoredBox(color: errorBgColor),
+                              ),
+                            ),
+                          ),
+                          if (title.isNotEmpty) ...[
+                            const SizedBox(height: 8),
+                            Padding(
+                              padding: const EdgeInsets.symmetric(horizontal: 4),
+                              child: Text(
+                                title,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: TextStyle(
+                                  fontSize: 14.5,
+                                  fontWeight: FontWeight.w800,
+                                  color: theme.colorScheme.onSurface,
+                                  height: 1.3,
+                                  letterSpacing: -0.3,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    );
+                  },
                 ),
               );
             }
 
             return RefreshIndicator(
               onRefresh: _refresh,
-              displacement: 36,
-              color: Colors.black,
+              color: isDark ? Colors.white : Colors.black,
+              backgroundColor: bgColor,
               child: CustomScrollView(
+                controller: _scrollCtrl,
                 physics: const AlwaysScrollableScrollPhysics(
-                  parent: BouncingScrollPhysics(),
-                ),
+                    parent: BouncingScrollPhysics()),
                 slivers: [
                   slider,
                   gridSliver,
+                  if (_loadingMore)
+                    SliverToBoxAdapter(
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: theme.colorScheme.onSurface,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (!_hasMore && _docs.isNotEmpty)
+                    SliverToBoxAdapter(
+                      child: Center(
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 20),
+                          child: Text(
+                            '마지막 게시물입니다.',
+                            style: TextStyle(
+                              color: theme.textTheme.bodyMedium?.color
+                                  ?.withOpacity(0.5),
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  const SliverToBoxAdapter(child: SizedBox(height: 80)),
                 ],
               ),
             );
@@ -467,14 +903,14 @@ class _HomePageState extends State<HomePage> {
   }
 }
 
-// 슬라이더 아이템
 class _SlideItem {
   final String label;
-  final String imageUrl; // '' 이면 플레이스홀더
+  final String subLabel;
+  final String imageUrl;
   final QueryDocumentSnapshot<Map<String, dynamic>>? doc;
-
-  _SlideItem({
+  const _SlideItem({
     required this.label,
+    required this.subLabel,
     required this.imageUrl,
     required this.doc,
   });
@@ -490,20 +926,22 @@ class _FadedTile extends StatefulWidget {
 }
 
 class _FadedTileState extends State<_FadedTile> {
-  bool _pressed = false;
+  bool _down = false;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTapDown: (_) => setState(() => _pressed = true),
-      onTapCancel: () => setState(() => _pressed = false),
+      behavior: HitTestBehavior.opaque,
+      onTapDown: (_) => setState(() => _down = true),
+      onTapCancel: () => setState(() => _down = false),
       onTapUp: (_) {
-        setState(() => _pressed = false);
+        setState(() => _down = false);
         widget.onTap();
       },
-      child: AnimatedOpacity(
-        duration: const Duration(milliseconds: 150),
-        opacity: _pressed ? 0.78 : 1.0,
+      child: AnimatedScale(
+        duration: const Duration(milliseconds: 120),
+        curve: Curves.easeOutBack,
+        scale: _down ? 0.96 : 1.0,
         child: widget.child,
       ),
     );
@@ -512,7 +950,6 @@ class _FadedTileState extends State<_FadedTile> {
 
 class _DragScrollBehavior extends MaterialScrollBehavior {
   const _DragScrollBehavior();
-
   @override
   Set<PointerDeviceKind> get dragDevices => {
     PointerDeviceKind.touch,
@@ -521,23 +958,60 @@ class _DragScrollBehavior extends MaterialScrollBehavior {
   };
 }
 
-// ───────────────────────── Cloudinary URL 최적화 ─────────────────────────
-// 썸네일용: 360x360, 자동 포맷 + 강한 품질 압축(q_auto:low)
-String _optimizeCloudinaryUrl(String url) {
-  const marker = '/upload/';
-  final idx = url.indexOf(marker);
-  if (idx == -1) return url;
+class _JellyDragProxy extends StatefulWidget {
+  final Widget child;
+  const _JellyDragProxy({required this.child});
 
-  final before = url.substring(0, idx + marker.length);
-  final after = url.substring(idx + marker.length);
+  @override
+  State<_JellyDragProxy> createState() => _JellyDragProxyState();
+}
 
-  // 이미 f_auto/q_auto 등이 붙어 있으면 그대로 사용
-  if (after.startsWith('f_auto') || after.startsWith('q_auto')) {
-    return url;
+class _JellyDragProxyState extends State<_JellyDragProxy>
+    with TickerProviderStateMixin {
+  late final AnimationController _popC = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 180),
+  )..forward();
+
+  late final Animation<double> _scale = Tween<double>(begin: 1.0, end: 1.12)
+      .animate(CurvedAnimation(parent: _popC, curve: Curves.easeOutBack));
+
+  late final AnimationController _wiggleC = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 110),
+  )..repeat(reverse: true);
+
+  late final Animation<double> _wiggle = Tween<double>(begin: -0.017, end: 0.017)
+      .animate(CurvedAnimation(parent: _wiggleC, curve: Curves.easeInOut));
+
+  @override
+  void dispose() {
+    _popC.dispose();
+    _wiggleC.dispose();
+    super.dispose();
   }
 
-  // 🔥 강한 압축: q_auto:low + 360x360 정사각 썸네일
-  return '$before'
-      'f_auto,q_auto:low,w_360,h_360,c_fill,g_auto/'
-      '$after';
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: Listenable.merge([_popC, _wiggleC]),
+      builder: (_, __) {
+        return Transform.rotate(
+          angle: _wiggle.value,
+          child: Transform.scale(
+            scale: _scale.value,
+            child: Material(
+              color: Colors.transparent,
+              elevation: 12,
+              shadowColor: Colors.black.withOpacity(0.28),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: widget.child,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
 }

@@ -35,7 +35,7 @@ class _SplashScreenState extends State<SplashScreen>
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('K', style: titleStyle),
+            const Text('R', style: titleStyle),
             const SizedBox(height: 12),
             _FlowTextWithUnderline(
               text: 'CATALOG',

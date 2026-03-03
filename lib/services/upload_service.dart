@@ -2,12 +2,14 @@
 // ------------------------------------------------------------
 // Cloudinary 업로드 서비스 (이미지 + 360° + 동영상)
 //
-// ⭐ 이미지/스핀 이미지는 그대로 원본 업로드
-// ⭐ 동영상만 사전 압축 후 Cloudinary(video) 업로드
+// ✅ 최종 목표
+// - 이미지/스핀: 원본 그대로 업로드 (화질 저하 X)
+// - 동영상: 모바일에서만 720p 압축 후 업로드
 // ------------------------------------------------------------
 
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart';
+
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:image_picker/image_picker.dart';
 import 'package:video_compress/video_compress.dart';
 
@@ -23,7 +25,7 @@ class UploadService {
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 1) 이미지 업로드
+  // 1) 이미지 업로드 (원본 그대로)
   // ─────────────────────────────────────────────────────────────
   static Future<String> uploadImage({
     required String postId,
@@ -35,61 +37,26 @@ class UploadService {
 
     final Uint8List bytes = await file.readAsBytes();
     final ext = _extFromName(file.name);
-    final String folder = 'posts/$brandKor/$postId/images';
-    final String fileName = 'main_${postId}_$index.$ext';
+    final folder = 'posts/$brandKor/$postId/images';
+    final fileName = 'main_${postId}_$index.$ext';
 
-    final String url = await CloudinaryService.uploadImageBytes(
+    final url = await CloudinaryService.uploadImageBytes(
       data: bytes,
       fileName: fileName,
       folder: folder,
     );
 
     sw.stop();
-
     print(
       '[CLOUDINARY] main[$index] '
           '${sw.elapsedMilliseconds} ms, '
           '${(bytes.lengthInBytes / 1024).toStringAsFixed(1)} KB',
     );
-
     return url;
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 2) 썸네일 업로드 (원본 그대로)
-  // ─────────────────────────────────────────────────────────────
-  static Future<String> uploadImageThumb({
-    required String postId,
-    required String brandKor,
-    required int index,
-    required XFile file,
-  }) async {
-    final sw = Stopwatch()..start();
-
-    final Uint8List bytes = await file.readAsBytes();
-    final ext = _extFromName(file.name);
-    final String folder = 'posts/$brandKor/$postId/thumbs';
-    final String fileName = 'thumb_${postId}_$index.$ext';
-
-    final String url = await CloudinaryService.uploadImageBytes(
-      data: bytes,
-      fileName: fileName,
-      folder: folder,
-    );
-
-    sw.stop();
-
-    print(
-      '[CLOUDINARY] thumb[$index] '
-          '${sw.elapsedMilliseconds} ms, '
-          '${(bytes.lengthInBytes / 1024).toStringAsFixed(1)} KB',
-    );
-
-    return url;
-  }
-
-  // ─────────────────────────────────────────────────────────────
-  // 3) 360° 이미지 업로드
+  // 2) 360° 이미지 업로드 (원본 그대로)
   // ─────────────────────────────────────────────────────────────
   static Future<String> uploadSpinImage({
     required String postId,
@@ -101,28 +68,26 @@ class UploadService {
 
     final Uint8List bytes = await file.readAsBytes();
     final ext = _extFromName(file.name);
-    final String folder = 'posts/$brandKor/$postId/spin';
-    final String fileName = 'spin_${postId}_$index.$ext';
+    final folder = 'posts/$brandKor/$postId/spin';
+    final fileName = 'spin_${postId}_$index.$ext';
 
-    final String url = await CloudinaryService.uploadImageBytes(
+    final url = await CloudinaryService.uploadImageBytes(
       data: bytes,
       fileName: fileName,
       folder: folder,
     );
 
     sw.stop();
-
     print(
       '[CLOUDINARY] spin[$index] '
           '${sw.elapsedMilliseconds} ms, '
           '${(bytes.lengthInBytes / 1024).toStringAsFixed(1)} KB',
     );
-
     return url;
   }
 
   // ─────────────────────────────────────────────────────────────
-  // 4) 동영상 업로드 (🔥 압축 → Cloudinary video 업로드)
+  // 3) 동영상 업로드 (모바일만 압축)
   // ─────────────────────────────────────────────────────────────
   static Future<String> uploadVideo({
     required String postId,
@@ -135,13 +100,13 @@ class UploadService {
     Uint8List bytes;
 
     if (kIsWeb) {
-      // 웹은 video_compress 동작 안함 → 원본 업로드
+      // 웹: video_compress 동작 안함 → 원본 업로드
       bytes = await file.readAsBytes();
     } else {
-      // 모바일(Android/iOS): 720p 압축 후 업로드
+      // 모바일(Android/iOS): 720p 압축 후 업로드 (속도/용량 개선)
       final compressed = await VideoCompress.compressVideo(
         file.path,
-        quality: VideoQuality.MediumQuality, // 필요하면 LowQuality 추천
+        quality: VideoQuality.MediumQuality,
         deleteOrigin: false,
       );
 
@@ -152,23 +117,21 @@ class UploadService {
       }
     }
 
-    // Cloudinary video folder
-    final String folder = 'posts/$brandKor/$postId/videos';
-    final String fileName = 'video_${postId}_$index.mp4';
+    final folder = 'posts/$brandKor/$postId/videos';
+    final fileName = 'video_${postId}_$index.mp4';
 
-    final String url = await CloudinaryService.uploadVideoBytes(
+    final url = await CloudinaryService.uploadVideoBytes(
       data: bytes,
       fileName: fileName,
       folder: folder,
     );
 
     sw.stop();
-
     print(
-      '[CLOUDINARY] video[$index] ${sw.elapsedMilliseconds} ms, '
-          '${(bytes.lengthInBytes / 1024).toStringAsFixed(1)} KB (compressed)',
+      '[CLOUDINARY] video[$index] '
+          '${sw.elapsedMilliseconds} ms, '
+          '${(bytes.lengthInBytes / 1024).toStringAsFixed(1)} KB',
     );
-
     return url;
   }
 }

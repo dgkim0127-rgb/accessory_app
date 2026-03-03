@@ -1,18 +1,21 @@
-// lib/main.dart  ✅ 최종: 상태바 흰색 + SafeArea 제거(안정적인 B안)
+// lib/main.dart ✅ 최종
 import 'package:accessory_app/services/notification_service.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'app.dart';
+import 'auth/auth_gate.dart';
 import 'core/activity_logger.dart';
 import 'core/announcement_popup_manager.dart';
-import 'auth/auth_gate.dart';
-import 'splash/splash_screen.dart';
+import 'core/app_settings_scope.dart';
+import 'core/app_settings_singleton.dart';
 import 'firebase_options.dart';
+import 'splash/splash_screen.dart';
+
+// ✅ 기존 테마 함수가 app.dart에 있다면 import 유지
+import 'app.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -23,27 +26,32 @@ Future<void> main() async {
         : DefaultFirebaseOptions.currentPlatform,
   );
 
-  // 알림 초기화
   await NotificationService.instance.init();
 
-  // 인증 로그 리스너 시작
+  // ✅ 로그인/로그아웃 기록
   ActivityLogger.startAuthListener();
 
-  // 👇 edgeToEdge 안 쓰고, 그냥 상태바/네비바 색만 명시하는 안정적인 방식
+  // ✅ 포그라운드/백그라운드(pause/resume) 기록 (세션 초 계속 증가 문제 해결용)
+  ActivityLogger.startLifecycleListener();
+
   if (!kIsWeb) {
     SystemChrome.setSystemUIOverlayStyle(
       const SystemUiOverlayStyle(
-        statusBarColor: Colors.white,              // 🔥 상단 바탕 = 흰색
-        statusBarIconBrightness: Brightness.dark,  // 아이콘 = 검은색
-        statusBarBrightness: Brightness.light,     // (iOS 용)
-
-        systemNavigationBarColor: Colors.white,    // 하단 네비바도 흰색
+        statusBarColor: Colors.white,
+        statusBarIconBrightness: Brightness.dark,
+        statusBarBrightness: Brightness.light,
+        systemNavigationBarColor: Colors.white,
         systemNavigationBarIconBrightness: Brightness.dark,
       ),
     );
   }
 
-  runApp(const _RootApp());
+  runApp(
+    AppSettingsScope(
+      notifier: AppSettings.instance,
+      child: const _RootApp(),
+    ),
+  );
 }
 
 class _RootApp extends StatefulWidget {
@@ -75,19 +83,33 @@ class _RootAppState extends State<_RootApp> {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      debugShowCheckedModeBanner: false,
-      title: 'Catalog',
-      theme: buildEInkTheme(),
-      builder: (context, child) {
-        return AnnouncementPopupManager(
-          child: child ?? const SizedBox.shrink(),
+    final settings = AppSettingsScope.of(context);
+
+    return AnimatedBuilder(
+      animation: settings,
+      builder: (context, _) {
+        return MaterialApp(
+          debugShowCheckedModeBanner: false,
+          title: 'Catalog',
+          theme: buildEInkTheme(), // ✅ 기존 테마 유지
+          builder: (context, child) {
+            final mq = MediaQuery.of(context);
+
+            // ✅ 전역 글자 크기 적용 (textScaleFactor deprecated 해결)
+            final scaled = mq.copyWith(
+              textScaler: TextScaler.linear(settings.textScale),
+            );
+
+            return MediaQuery(
+              data: scaled,
+              child: AnnouncementPopupManager(
+                child: child ?? const SizedBox.shrink(),
+              ),
+            );
+          },
+          home: _bootstrapped ? const AuthGate() : const SplashScreen(),
         );
       },
-      // 👇 SafeArea 완전히 제거 (각 페이지에서 Scaffold가 다 처리)
-      home: _bootstrapped
-          ? const AuthGate()
-          : const SplashScreen(),
     );
   }
 }

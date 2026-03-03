@@ -1,4 +1,10 @@
-// lib/pages/root_tab.dart
+// lib/pages/root_tab.dart ✅ 최종(전체)
+// - 포그라운드에서만 ping => lastSeenAt 갱신(활동표시)
+// - 백그라운드에서는 ping 중지 => lastSeenAt 멈춤(활동표시 빨강으로 전환)
+// - 하지만 잠금(isLoggedIn/currentDeviceId)은 유지 => 다른 폰 로그인 불가
+
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -9,6 +15,7 @@ import 'home_page.dart';
 import 'search_page.dart';
 import 'profile_page.dart';
 import 'new_post_page.dart';
+import 'settings_page.dart';
 import 'brand_profile_page.dart' as bp;
 
 import '../services/single_login_guard.dart';
@@ -16,21 +23,29 @@ import '../services/single_login_guard.dart';
 class RootTab extends StatefulWidget {
   final String role;
   final int initialIndex;
-  const RootTab({super.key, this.role = 'user', this.initialIndex = 2});
+
+  const RootTab({
+    super.key,
+    this.role = 'user',
+    this.initialIndex = 2,
+  });
 
   @override
   State<RootTab> createState() => _RootTabState();
 }
 
-class _RootTabState extends State<RootTab> {
+class _RootTabState extends State<RootTab> with WidgetsBindingObserver {
   static const double kWide = 900;
   late int _index;
   late final PageController _pageCtrl;
 
+  Timer? _pingTimer;
+  static const Duration _pingEvery = Duration(seconds: 45);
+
   User? get _user => FirebaseAuth.instance.currentUser;
 
-  bool get _isAdmin {
-    final r = widget.role.toLowerCase();
+  bool get _isAdminOrSuper {
+    final r = widget.role.toLowerCase().trim();
     return r == 'admin' || r == 'super';
   }
 
@@ -39,12 +54,43 @@ class _RootTabState extends State<RootTab> {
     super.initState();
     _index = widget.initialIndex.clamp(0, 4);
     _pageCtrl = PageController(initialPage: _index);
+
+    WidgetsBinding.instance.addObserver(this);
+
+    _startPing();
   }
 
   @override
   void dispose() {
+    _stopPing();
+    WidgetsBinding.instance.removeObserver(this);
     _pageCtrl.dispose();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _startPing();
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive ||
+        state == AppLifecycleState.hidden) {
+      _stopPing();
+    }
+  }
+
+  void _startPing() {
+    if (_pingTimer != null) return;
+
+    SingleLoginGuard.instance.ping(); // 즉시 1회
+    _pingTimer = Timer.periodic(_pingEvery, (_) {
+      SingleLoginGuard.instance.ping();
+    });
+  }
+
+  void _stopPing() {
+    _pingTimer?.cancel();
+    _pingTimer = null;
   }
 
   bool _isWide(BuildContext c) => MediaQuery.of(c).size.width >= kWide;
@@ -62,7 +108,7 @@ class _RootTabState extends State<RootTab> {
       barrierLabel: '닫기',
       transitionDuration: const Duration(milliseconds: 280),
       pageBuilder: (_, __, ___) => const SizedBox.shrink(),
-      transitionBuilder: (ctx, anim1, anim2, child) {
+      transitionBuilder: (ctx, anim1, __, ___) {
         return Transform.scale(
           scale: Curves.easeOutBack.transform(anim1.value),
           child: Opacity(
@@ -86,18 +132,13 @@ class _RootTabState extends State<RootTab> {
                       children: [
                         const Text(
                           '로그아웃',
-                          style: TextStyle(
-                            fontWeight: FontWeight.w800,
-                            fontSize: 16,
-                          ),
+                          style:
+                          TextStyle(fontWeight: FontWeight.w800, fontSize: 16),
                         ),
                         const SizedBox(height: 8),
                         const Text(
                           '정말 로그아웃 하시겠어요?',
-                          style: TextStyle(
-                            fontSize: 13,
-                            color: Colors.black87,
-                          ),
+                          style: TextStyle(fontSize: 13, color: Colors.black87),
                         ),
                         const SizedBox(height: 18),
                         Row(
@@ -106,8 +147,7 @@ class _RootTabState extends State<RootTab> {
                             TextButton(
                               onPressed: () => Navigator.pop(ctx, false),
                               style: TextButton.styleFrom(
-                                foregroundColor: Colors.black54,
-                              ),
+                                  foregroundColor: Colors.black54),
                               child: const Text('취소'),
                             ),
                             const SizedBox(width: 6),
@@ -117,8 +157,7 @@ class _RootTabState extends State<RootTab> {
                                 backgroundColor: Colors.black,
                                 foregroundColor: Colors.white,
                                 shape: const RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.zero,
-                                ),
+                                    borderRadius: BorderRadius.zero),
                               ),
                               child: const Text('로그아웃'),
                             ),
@@ -136,6 +175,7 @@ class _RootTabState extends State<RootTab> {
     );
 
     if (ok == true) {
+      _stopPing();
       await SingleLoginGuard.instance.releaseLock();
       await FirebaseAuth.instance.signOut();
     }
@@ -154,16 +194,13 @@ class _RootTabState extends State<RootTab> {
           child: Align(
             alignment: const Alignment(0, -0.2),
             child: ConstrainedBox(
-              constraints: const BoxConstraints(
-                maxWidth: 460,
-                maxHeight: 540,
-              ),
+              constraints: const BoxConstraints(maxWidth: 460, maxHeight: 540),
               child: Material(
                 color: Colors.white,
                 elevation: 6,
                 borderRadius: BorderRadius.circular(4),
                 child: CategoriesPage(
-                  isAdmin: _isAdmin,
+                  isAdmin: _isAdminOrSuper,
                   onOpenBrand: ({
                     required String brandKor,
                     String? brandEng,
@@ -176,7 +213,7 @@ class _RootTabState extends State<RootTab> {
                         builder: (_) => bp.BrandProfilePage(
                           brandKor: brandKor,
                           brandEng: brandEng ?? '',
-                          isAdmin: _isAdmin,
+                          isAdmin: _isAdminOrSuper,
                           initialCategory: initialCategory,
                         ),
                       ),
@@ -196,12 +233,11 @@ class _RootTabState extends State<RootTab> {
     final pages = <Widget>[
       const CategoriesPage(),
       const FavoritesPage(),
-      const HomePage(),
+      HomePage(isAdmin: _isAdminOrSuper),
       const SearchPage(),
       ProfilePage(role: widget.role),
     ];
 
-    // ───────────────── AppBar: Firestore(system/appbar) 기반 동적 타이틀 ─────────────────
     final appBar = AppBar(
       title: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
         stream: FirebaseFirestore.instance
@@ -209,29 +245,18 @@ class _RootTabState extends State<RootTab> {
             .doc('appbar')
             .snapshots(),
         builder: (context, snap) {
-          // 기본 타이틀 (에셋 아이콘 2개)
           Widget defaultTitle = Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Image.asset(
-                'assets/appbar/free-icon-diamonds-5903088.png',
-                width: 35,
-                height: 35,
-                fit: BoxFit.contain,
-              ),
+              Image.asset('assets/appbar/free-icon-diamonds-5903088.png',
+                  width: 35, height: 35),
               const SizedBox(width: 5),
-              Image.asset(
-                'assets/appbar/free-icon-k-3522350.png',
-                width: 25,
-                height: 25,
-                fit: BoxFit.contain,
-              ),
+              Image.asset('assets/appbar/free-icon-k-3522350.png',
+                  width: 25, height: 25),
             ],
           );
 
-          if (!snap.hasData || !snap.data!.exists) {
-            return defaultTitle;
-          }
+          if (!snap.hasData || !snap.data!.exists) return defaultTitle;
 
           final data = snap.data!.data() ?? {};
           final titleText = (data['titleText'] ?? '').toString();
@@ -240,105 +265,72 @@ class _RootTabState extends State<RootTab> {
 
           final children = <Widget>[];
 
-          // 왼쪽 아이콘: 업로드된 이미지 있으면 우선, 없으면 기본 다이아몬드
-          if (leftUrl.isNotEmpty) {
-            children.add(
-              Image.network(
-                leftUrl,
-                width: 35,
-                height: 35,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) {
-                  return Image.asset(
-                    'assets/appbar/free-icon-diamonds-5903088.png',
-                    width: 35,
-                    height: 35,
-                    fit: BoxFit.contain,
-                  );
-                },
-              ),
-            );
-          } else {
-            children.add(
-              Image.asset(
+          children.add(
+            leftUrl.isNotEmpty
+                ? Image.network(
+              leftUrl,
+              width: 35,
+              height: 35,
+              errorBuilder: (_, __, ___) => Image.asset(
                 'assets/appbar/free-icon-diamonds-5903088.png',
                 width: 35,
                 height: 35,
-                fit: BoxFit.contain,
               ),
-            );
-          }
+            )
+                : Image.asset('assets/appbar/free-icon-diamonds-5903088.png',
+                width: 35, height: 35),
+          );
 
           children.add(const SizedBox(width: 5));
 
-          // 오른쪽 영역: 업로드 이미지 > 제목 텍스트 > 기본 K 아이콘
           if (rightUrl.isNotEmpty) {
             children.add(
               Image.network(
                 rightUrl,
                 width: 25,
                 height: 25,
-                fit: BoxFit.contain,
-                errorBuilder: (_, __, ___) {
-                  return Image.asset(
-                    'assets/appbar/free-icon-k-3522350.png',
-                    width: 25,
-                    height: 25,
-                    fit: BoxFit.contain,
-                  );
-                },
-              ),
-            );
-          } else if (titleText.isNotEmpty) {
-            children.add(
-              Text(
-                titleText,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.bold,
+                errorBuilder: (_, __, ___) => Image.asset(
+                  'assets/appbar/free-icon-k-3522350.png',
+                  width: 25,
+                  height: 25,
                 ),
               ),
             );
+          } else if (titleText.isNotEmpty) {
+            children.add(Text(titleText,
+                style:
+                const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)));
           } else {
-            children.add(
-              Image.asset(
-                'assets/appbar/free-icon-k-3522350.png',
-                width: 25,
-                height: 25,
-                fit: BoxFit.contain,
-              ),
-            );
+            children.add(Image.asset('assets/appbar/free-icon-k-3522350.png',
+                width: 25, height: 25));
           }
 
-          return Row(
-            mainAxisSize: MainAxisSize.min,
-            children: children,
-          );
+          return Row(mainAxisSize: MainAxisSize.min, children: children);
         },
       ),
       actions: [
+        IconButton(
+          tooltip: '설정',
+          onPressed: () => Navigator.push(
+              context, MaterialPageRoute(builder: (_) => const SettingsPage())),
+          icon: const Icon(Icons.settings_outlined),
+        ),
         Padding(
           padding: const EdgeInsets.only(right: 10),
           child: PopupMenuButton<String>(
             offset: const Offset(0, 32),
             elevation: 0,
             color: Colors.white,
-            shape: const RoundedRectangleBorder(
-              borderRadius: BorderRadius.zero,
-            ),
+            shape: const RoundedRectangleBorder(borderRadius: BorderRadius.zero),
             onSelected: (v) async {
               switch (v) {
                 case 'profile':
                   _goTo(4);
                   break;
                 case 'upload':
-                  if (_isAdmin) {
-                    await Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => const NewPostPage(),
-                      ),
-                    );
+                  if (_isAdminOrSuper) {
+                    await Navigator.push(context,
+                        MaterialPageRoute(builder: (_) => const NewPostPage()));
                   }
                   break;
                 case 'logout':
@@ -347,19 +339,10 @@ class _RootTabState extends State<RootTab> {
               }
             },
             itemBuilder: (_) => [
-              const PopupMenuItem<String>(
-                value: 'profile',
-                child: Text('프로필로 이동'),
-              ),
-              if (_isAdmin)
-                const PopupMenuItem<String>(
-                  value: 'upload',
-                  child: Text('게시물 업로드'),
-                ),
-              const PopupMenuItem<String>(
-                value: 'logout',
-                child: Text('로그아웃'),
-              ),
+              const PopupMenuItem<String>(value: 'profile', child: Text('프로필로 이동')),
+              if (_isAdminOrSuper)
+                const PopupMenuItem<String>(value: 'upload', child: Text('게시물 업로드')),
+              const PopupMenuItem<String>(value: 'logout', child: Text('로그아웃')),
             ],
             child: Container(
               width: 28,
@@ -372,28 +355,20 @@ class _RootTabState extends State<RootTab> {
                 child: Text(
                   _initial(),
                   style: const TextStyle(
-                    color: Colors.black,
-                    fontWeight: FontWeight.w700,
-                    fontSize: 12,
-                  ),
+                      color: Colors.black,
+                      fontWeight: FontWeight.w700,
+                      fontSize: 12),
                 ),
               ),
             ),
           ),
         ),
       ],
-      bottom: const PreferredSize(
-        preferredSize: Size.fromHeight(1),
-        child: Divider(height: 1),
-      ),
+      bottom: const PreferredSize(preferredSize: Size.fromHeight(1), child: Divider(height: 1)),
     );
 
-    // ───────────────── 레이아웃 (모바일 / 와이드) ─────────────────
-    Widget content;
-
     if (!_isWide(context)) {
-      // 모바일: 하단 NavigationBar
-      content = Scaffold(
+      return Scaffold(
         backgroundColor: Colors.white,
         appBar: appBar,
         body: PageView(
@@ -414,51 +389,43 @@ class _RootTabState extends State<RootTab> {
           ],
         ),
       );
-    } else {
-      // 데스크톱/태블릿 와이드: 좌측 NavigationRail
-      content = Scaffold(
-        backgroundColor: Colors.white,
-        appBar: appBar,
-        body: Row(
-          children: [
-            NavigationRail(
-              selectedIndex: _index,
-              onDestinationSelected: (i) {
-                if (i == 0) {
-                  _openCategoriesDialog();
-                  return;
-                }
-                _goTo(i);
-              },
-              labelType: NavigationRailLabelType.none,
-              minWidth: 64,
-              destinations: const [
-                NavigationRailDestination(
-                    icon: Icon(Icons.view_headline), label: Text('')),
-                NavigationRailDestination(
-                    icon: Icon(Icons.favorite_outline), label: Text('')),
-                NavigationRailDestination(
-                    icon: Icon(Icons.home_outlined), label: Text('')),
-                NavigationRailDestination(
-                    icon: Icon(Icons.search), label: Text('')),
-                NavigationRailDestination(
-                    icon: Icon(Icons.person_outline), label: Text('')),
-              ],
-            ),
-            const VerticalDivider(width: 1),
-            Expanded(
-              child: PageView(
-                controller: _pageCtrl,
-                onPageChanged: (i) => setState(() => _index = i),
-                children: pages,
-              ),
-            ),
-          ],
-        ),
-      );
     }
 
-    return content;
+    return Scaffold(
+      backgroundColor: Colors.white,
+      appBar: appBar,
+      body: Row(
+        children: [
+          NavigationRail(
+            selectedIndex: _index,
+            onDestinationSelected: (i) {
+              if (i == 0) {
+                _openCategoriesDialog();
+                return;
+              }
+              _goTo(i);
+            },
+            labelType: NavigationRailLabelType.none,
+            minWidth: 64,
+            destinations: const [
+              NavigationRailDestination(icon: Icon(Icons.view_headline), label: Text('')),
+              NavigationRailDestination(icon: Icon(Icons.favorite_outline), label: Text('')),
+              NavigationRailDestination(icon: Icon(Icons.home_outlined), label: Text('')),
+              NavigationRailDestination(icon: Icon(Icons.search), label: Text('')),
+              NavigationRailDestination(icon: Icon(Icons.person_outline), label: Text('')),
+            ],
+          ),
+          const VerticalDivider(width: 1),
+          Expanded(
+            child: PageView(
+              controller: _pageCtrl,
+              onPageChanged: (i) => setState(() => _index = i),
+              children: pages,
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _goTo(int i) {

@@ -2,6 +2,8 @@ name: accessory_app
 description: "Accessory App"
 publish_to: "none"
 
+version: 1.0.1+9
+
 environment:
   sdk: ">=3.5.0 <4.0.0"
 
@@ -31,9 +33,13 @@ dependencies:
   cached_network_image: ^3.3.1
   visibility_detector: ^0.4.0+2
   flutter_staggered_grid_view: ^0.7.0
+  reorderable_grid_view: ^2.2.8
+  firebase_remote_config: ^6.0.4
 
   firebase_messaging: ^16.0.4
   flutter_local_notifications: ^19.5.0
+  package_info_plus: ^8.0.2
+  in_app_update: ^4.2.3
 
 dev_dependencies:
   flutter_test:
@@ -49,7 +55,7 @@ flutter:
 flutter_icons:
   android: true
   ios: true
-  image_path: "assets/icons/app_icon1.png"        # 정사각형 1024x1024 권장
+  image_path: "assets/icons/app_icon1.png"       # 정사각형 1024x1024 권장
   remove_alpha_ios: true
   android_13:
     image: "assets/icon/app_icon_monochrome.png"  # 432x432 권장(투명 단색)

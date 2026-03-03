@@ -1,22 +1,34 @@
-// lib/pages/post_detail_page.dart  ✅ 최종: 두 손가락 전용 줌 + 딤 오버레이 + 브랜드 헤더(점3개)
+// lib/pages/post_detail_page.dart ✅ 최종(전체)
+// ✅ 핵심
+// 1) 상세 이미지는 "원본(imageUrl)"이 아니라 "mediumUrl / mediumImages" 우선 사용 → 선명 + 적당히 빠름
+// 2) Image.network에 cacheWidth 적용 → 디코딩/메모리 부담 ↓, 스크롤/줌 체감 ↑
+// 3) 두 손가락 전용 줌 + 딤 오버레이 + 손 떼면 원복 유지
+// 4) 기존 UI(브랜드 헤더 + ⋮ 수정/삭제) 유지
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 
+import '../utils/cloudinary_image_utils.dart';
 import 'edit_post_page.dart';
 import 'brand_profile_page.dart';
 
 class PostDetailPage extends StatelessWidget {
   final String postId;
   final Map<String, dynamic> data;
-  const PostDetailPage({super.key, required this.postId, required this.data});
+  const PostDetailPage({
+    super.key,
+    required this.postId,
+    required this.data,
+  });
 
   Future<bool> _isAdmin() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return false;
     try {
-      final doc = await FirebaseFirestore.instance.collection('users').doc(uid).get();
+      final doc =
+      await FirebaseFirestore.instance.collection('users').doc(uid).get();
       final role = (doc.data()?['role'] as String?)?.toLowerCase() ?? 'user';
       return role == 'admin' || role == 'super';
     } catch (_) {
@@ -26,16 +38,34 @@ class PostDetailPage extends StatelessWidget {
 
   bool _isOwner() => FirebaseAuth.instance.currentUser?.uid == data['uid'];
 
+  /// ✅ 상세 표시는 medium 우선 (없으면 imageUrl에서 medium 변환)
+  String _pickDetailUrl(Map<String, dynamic> data) {
+    final direct = (data['mediumUrl'] ?? '').toString().trim();
+    if (direct.isNotEmpty) return direct;
+
+    final list = data['mediumImages'];
+    if (list is List && list.isNotEmpty) {
+      final u = (list.first ?? '').toString().trim();
+      if (u.isNotEmpty) return u;
+    }
+
+    final raw = (data['imageUrl'] ?? '').toString().trim();
+    if (raw.isEmpty) return '';
+    return buildMediumUrl(raw);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final img   = (data['imageUrl'] ?? '').toString();
+    final img = _pickDetailUrl(data);
+    final rawOriginalForDelete = (data['imageUrl'] ?? '').toString();
+
     final title = (data['title'] ?? '').toString();
-    final desc  = (data['description'] ?? '').toString();
+    final desc = (data['description'] ?? '').toString();
 
     // 브랜드 정보
-    final brandKor  = (data['brand'] ?? '').toString();
-    final brandEng  = (data['brandEng'] ?? '').toString();
-    final logoUrl   = (data['brandLogoUrl'] ?? data['logoUrl'] ?? '').toString();
+    final brandKor = (data['brand'] ?? '').toString();
+    final brandEng = (data['brandEng'] ?? '').toString();
+    final logoUrl = (data['brandLogoUrl'] ?? data['logoUrl'] ?? '').toString();
 
     return FutureBuilder<bool>(
       future: _isAdmin(),
@@ -51,7 +81,7 @@ class PostDetailPage extends StatelessWidget {
           body: ListView(
             padding: EdgeInsets.zero,
             children: [
-              // ====== 브랜드 영역(터치 → BrandProfilePage) + 점3개(세로) ======
+              // ====== 브랜드 영역 + 점3개 ======
               _BrandHeaderRow(
                 brandKor: brandKor,
                 brandEng: brandEng,
@@ -63,7 +93,10 @@ class PostDetailPage extends StatelessWidget {
                   await Navigator.push(
                     context,
                     MaterialPageRoute(
-                      builder: (_) => EditPostPage(postId: postId, initialData: data),
+                      builder: (_) => EditPostPage(
+                        postId: postId,
+                        initialData: data,
+                      ),
                     ),
                   );
                 },
@@ -74,17 +107,34 @@ class PostDetailPage extends StatelessWidget {
                       title: const Text('삭제 확인'),
                       content: const Text('이 게시물을 삭제하시겠습니까?'),
                       actions: [
-                        TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('취소')),
-                        TextButton(onPressed: () => Navigator.pop(context, true), child: const Text('삭제')),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('취소'),
+                        ),
+                        TextButton(
+                          onPressed: () => Navigator.pop(context, true),
+                          child: const Text('삭제'),
+                        ),
                       ],
                     ),
                   );
+
                   if (ok == true) {
                     try {
-                      await FirebaseFirestore.instance.collection('posts').doc(postId).delete();
-                      if (img.startsWith('http')) {
-                        try { await FirebaseStorage.instance.refFromURL(img).delete(); } catch (_) {}
+                      await FirebaseFirestore.instance
+                          .collection('posts')
+                          .doc(postId)
+                          .delete();
+
+                      // ⚠️ Cloudinary URL이면 FirebaseStorage 삭제가 실패할 수 있음(무시)
+                      if (rawOriginalForDelete.startsWith('http')) {
+                        try {
+                          await FirebaseStorage.instance
+                              .refFromURL(rawOriginalForDelete)
+                              .delete();
+                        } catch (_) {}
                       }
+
                       if (context.mounted) Navigator.pop(context);
                     } catch (e) {
                       if (context.mounted) {
@@ -97,15 +147,13 @@ class PostDetailPage extends StatelessWidget {
                 },
               ),
 
-              // ====== 이미지: 두 손가락 전용 확대/이동 + 딤 오버레이 + 손 떼면 원상복구 ======
+              // ====== 이미지: 두 손가락 전용 확대/이동 + 딤 + 원복 ======
               SizedBox(
                 height: MediaQuery.of(context).size.width * 5 / 4, // 4:5 프레임
-                child: _TwoFingerZoomImage(
-                  url: img,
-                ),
+                child: _TwoFingerZoomImage(url: img),
               ),
 
-              // ====== 제목 / 좋아요 버튼 (제목-설명 간격 촘촘) ======
+              // ====== 제목 / 좋아요 ======
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 12, 8, 4),
                 child: Row(
@@ -113,7 +161,10 @@ class PostDetailPage extends StatelessWidget {
                     Expanded(
                       child: Text(
                         title.isEmpty ? '(제목 없음)' : title,
-                        style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800),
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w800,
+                        ),
                         maxLines: 2,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -133,7 +184,11 @@ class PostDetailPage extends StatelessWidget {
                   padding: const EdgeInsets.fromLTRB(16, 2, 16, 16),
                   child: Text(
                     desc,
-                    style: const TextStyle(fontSize: 15, color: Colors.black87, height: 1.3),
+                    style: const TextStyle(
+                      fontSize: 15,
+                      color: Colors.black87,
+                      height: 1.3,
+                    ),
                   ),
                 ),
             ],
@@ -180,7 +235,8 @@ class _BrandHeaderRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     const line = Color(0xFFE6E6E6);
-    final dateStr = (createdAt is Timestamp) ? _humanize((createdAt as Timestamp).toDate()) : '';
+    final dateStr =
+    (createdAt is Timestamp) ? _humanize((createdAt as Timestamp).toDate()) : '';
     final displayKor = brandKor.isEmpty ? 'ALL' : brandKor;
 
     return Container(
@@ -209,7 +265,8 @@ class _BrandHeaderRow extends StatelessWidget {
                 CircleAvatar(
                   radius: 18,
                   backgroundColor: const Color(0x11000000),
-                  backgroundImage: (logoUrl.isNotEmpty) ? NetworkImage(logoUrl) : null,
+                  backgroundImage:
+                  (logoUrl.isNotEmpty) ? NetworkImage(logoUrl) : null,
                   child: (logoUrl.isEmpty)
                       ? const Icon(Icons.store, color: Colors.black54)
                       : null,
@@ -218,9 +275,21 @@ class _BrandHeaderRow extends StatelessWidget {
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(displayKor, style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 14.5)),
+                    Text(
+                      displayKor,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 14.5,
+                      ),
+                    ),
                     if (dateStr.isNotEmpty)
-                      Text(dateStr, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                      Text(
+                        dateStr,
+                        style: const TextStyle(
+                          fontSize: 12,
+                          color: Colors.black54,
+                        ),
+                      ),
                   ],
                 ),
               ],
@@ -252,7 +321,7 @@ class _BrandHeaderRow extends StatelessWidget {
   }
 }
 
-/// 두 손가락 전용 줌 + 더 빠른 인식 + 확대 중 딤 오버레이 + 손 떼면 원복
+/// ✅ 두 손가락 전용 줌 + 더 빠른 인식 + 확대 중 딤 오버레이 + 손 떼면 원복
 class _TwoFingerZoomImage extends StatefulWidget {
   final String url;
   const _TwoFingerZoomImage({required this.url});
@@ -267,21 +336,22 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
   late final AnimationController _anim;
   Animation<Matrix4>? _resetTween;
 
-  // 포인터/줌 상태
   int _pointers = 0;
   bool _zooming = false;
-  double _dim = 0.0; // 0~0.28
+  double _dim = 0.0;
 
   static const double _dimMax = 0.28;
-  static const double _zoomThreshold = 1.005; // 민감도 ↑ (빠르게 줌 인식)
+  static const double _zoomThreshold = 1.005;
 
-  // 빠른 멀티터치 인식(더블-포인터)
   DateTime? _lastPointerDownAt;
 
   @override
   void initState() {
     super.initState();
-    _anim = AnimationController(vsync: this, duration: const Duration(milliseconds: 220))
+    _anim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    )
       ..addListener(() {
         _tc.value = _resetTween?.value ?? Matrix4.identity();
       })
@@ -327,7 +397,6 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
     return Listener(
       onPointerDown: (_) {
         final now = DateTime.now();
-        // 180ms 안에 두 번째 손가락이 닿으면 바로 멀티터치로 간주 → 더 빠른 반응
         if (_lastPointerDownAt != null &&
             now.difference(_lastPointerDownAt!).inMilliseconds < 180) {
           _pointers = (_pointers + 1).clamp(0, 10);
@@ -335,27 +404,27 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
           _pointers = (_pointers + 1).clamp(0, 10);
         }
         _lastPointerDownAt = now;
+
         if (_pointers >= 2) {
           _setZooming(true);
-          _setDim(_dimMax); // 멀티터치 순간 바로 딤 켜기
+          _setDim(_dimMax);
         }
       },
       onPointerUp: (_) {
         _pointers = (_pointers - 1).clamp(0, 10);
-        if (_pointers < 2) {
-          _animateBack();
-        }
+        if (_pointers < 2) _animateBack();
       },
       onPointerCancel: (_) {
         _pointers = (_pointers - 1).clamp(0, 10);
-        if (_pointers < 2) {
-          _animateBack();
-        }
+        if (_pointers < 2) _animateBack();
       },
       child: LayoutBuilder(
         builder: (_, constraints) {
           final frameW = constraints.maxWidth;
           final frameH = constraints.maxHeight;
+
+          final cacheW =
+          (frameW * MediaQuery.of(context).devicePixelRatio).round();
 
           return Stack(
             fit: StackFit.expand,
@@ -366,9 +435,8 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
                 boundaryMargin: const EdgeInsets.all(99999),
                 minScale: 1.0,
                 maxScale: 4.0,
-                // 두 손가락(>=2)일 때만 이동 허용
                 panEnabled: _pointers >= 2,
-                scaleEnabled: true, // 핀치 줌
+                scaleEnabled: true,
                 clipBehavior: Clip.none,
                 onInteractionStart: (_) {
                   if (_pointers >= 2) {
@@ -378,7 +446,6 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
                 },
                 onInteractionUpdate: (_) {
                   final s = _tc.value.getMaxScaleOnAxis();
-                  // 아주 미세한 확대에서도 바로 인식되도록 임계값 낮춤
                   _setZooming(s > _zoomThreshold);
                   _setDim(_zooming ? _dimMax : 0.0);
                 },
@@ -390,16 +457,23 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
                       ? Image.network(
                     url,
                     fit: BoxFit.cover,
-                    errorBuilder: (_, __, ___) =>
-                    const Center(child: Icon(Icons.broken_image, size: 40)),
-                    loadingBuilder: (_, child, ev) =>
-                    ev == null ? child : const Center(child: CircularProgressIndicator()),
+                    cacheWidth: cacheW, // ✅ 체감 성능 핵심
+
+                    errorBuilder: (_, __, ___) => const Center(
+                      child: Icon(Icons.broken_image, size: 40),
+                    ),
+                    loadingBuilder: (_, child, ev) => ev == null
+                        ? child
+                        : const Center(
+                      child: CircularProgressIndicator(),
+                    ),
                   )
-                      : const Center(child: Icon(Icons.broken_image, size: 40)),
+                      : const Center(
+                    child: Icon(Icons.broken_image, size: 40),
+                  ),
                 ),
               ),
 
-              // 확대 중 딤 오버레이
               IgnorePointer(
                 child: AnimatedOpacity(
                   duration: const Duration(milliseconds: 140),

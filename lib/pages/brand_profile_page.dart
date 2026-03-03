@@ -1,9 +1,14 @@
-// lib/pages/brand_profile_page.dart
-// ✅ 브랜드 아이콘 → 이니셜 원
-// ✅ 카테고리 탭(목걸이, 반지 등)은 아이콘 없이 텍스트만
+// lib/pages/brand_profile_page.dart ✅ 웹 반응형(최대 6열) + 4:5 비율 + 중앙 정렬 적용
+import 'dart:async';
+import 'dart:math';
+
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+
 import '../widgets/post_overlay.dart';
+import '../utils/cloudinary_image_utils.dart';
 
 class BrandProfilePage extends StatefulWidget {
   final String brandKor;
@@ -28,18 +33,20 @@ class _BrandProfilePageState extends State<BrandProfilePage>
   late final TabController _tab;
 
   static const _tabs = <_CatTab>[
-    _CatTab(label: '전체', code: null),
-    _CatTab(label: '반지', code: 'ring'),
-    _CatTab(label: '목걸이', code: 'necklace'),
-    _CatTab(label: '팔찌', code: 'bracelet'),
-    _CatTab(label: '귀걸이', code: 'earring'),
-    _CatTab(label: '기타', code: 'acc'),
+    _CatTab(label: '전체', code: null, icon: Icons.grid_view_rounded),
+    _CatTab(label: '반지', code: 'ring', asset: 'assets/icons/ring.png'),
+    _CatTab(label: '목걸이', code: 'necklace', asset: 'assets/icons/necklace.png'),
+    _CatTab(label: '팔찌', code: 'bracelet', asset: 'assets/icons/bracelet.png'),
+    _CatTab(label: '귀걸이', code: 'earring', asset: 'assets/icons/earring.png'),
+    _CatTab(label: '기타', code: 'acc', icon: Icons.more_horiz_rounded),
   ];
 
   int _indexForCode(String? code) {
     final i = _tabs.indexWhere((t) => t.code == code);
     return i < 0 ? 0 : i;
   }
+
+  bool get _isAllBrand => widget.brandKor.trim().toUpperCase() == 'ALL';
 
   @override
   void initState() {
@@ -49,6 +56,9 @@ class _BrandProfilePageState extends State<BrandProfilePage>
       vsync: this,
       initialIndex: _indexForCode(widget.initialCategory),
     );
+    _tab.addListener(() {
+      if (!_tab.indexIsChanging) setState(() {});
+    });
   }
 
   @override
@@ -57,182 +67,215 @@ class _BrandProfilePageState extends State<BrandProfilePage>
     super.dispose();
   }
 
-  Future<int> _count({String? cat}) async {
-    Query<Map<String, dynamic>> base =
-    FirebaseFirestore.instance.collection('posts');
+  String _initial() {
+    if (_isAllBrand) return 'A';
+    final eng = widget.brandEng.trim();
+    if (eng.isNotEmpty) return eng.characters.first.toUpperCase();
+    final kor = widget.brandKor.trim();
+    return kor.isNotEmpty ? kor.characters.first.toUpperCase() : 'B';
+  }
 
-    if (widget.brandKor.trim().toUpperCase() != 'ALL') {
-      base = base.where('brand', isEqualTo: widget.brandKor);
+  Query<Map<String, dynamic>> _baseQuery() {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('posts');
+    if (!_isAllBrand) {
+      q = q.where('brand', isEqualTo: widget.brandKor);
     }
-    if (cat != null) base = base.where('category', isEqualTo: cat);
+    return q;
+  }
 
-    final agg = await base.count().get();
-    return agg.count ?? 0;
+  Future<int> _count({String? cat}) async {
+    final base = _baseQuery();
+    if (cat == null) {
+      final agg = await base.count().get();
+      return agg.count ?? 0;
+    }
+    final qNew = base.where('categories', arrayContains: cat);
+    final qOld = base.where('category', isEqualTo: cat);
+    final s1 = await qNew.get();
+    final s2 = await qOld.get();
+    final ids = <String>{};
+    for (final d in s1.docs) ids.add(d.id);
+    for (final d in s2.docs) ids.add(d.id);
+    return ids.length;
   }
 
   @override
   Widget build(BuildContext context) {
-    const line = Color(0xffe6e6e6);
-    final isAll = widget.brandKor.trim().toUpperCase() == 'ALL';
-    final titleKor = isAll ? 'ALL' : widget.brandKor;
-    final titleEng = isAll ? '' : widget.brandEng;
-
-    // ✅ 이니셜 생성 (영문 우선)
-    String _initial() {
-      if (isAll) return 'A';
-      final eng = widget.brandEng.trim();
-      if (eng.isNotEmpty) return eng.characters.first.toUpperCase();
-      final kor = widget.brandKor.trim();
-      return kor.isNotEmpty ? kor.characters.first.toUpperCase() : 'B';
-    }
+    final theme = Theme.of(context);
+    final cs = theme.colorScheme;
+    final line = theme.dividerTheme.color ?? Colors.transparent;
+    final appBarTitle = _isAllBrand ? 'ALL COLLECTIONS' : widget.brandEng.toUpperCase();
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: theme.scaffoldBackgroundColor,
       appBar: AppBar(
-        titleSpacing: 0,
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(titleKor, style: const TextStyle(fontWeight: FontWeight.w700)),
-            if (titleEng.isNotEmpty)
-              Text(titleEng,
-                  style: const TextStyle(fontSize: 12, color: Colors.black54)),
-          ],
+        backgroundColor: theme.scaffoldBackgroundColor,
+        elevation: 0,
+        scrolledUnderElevation: 0,
+        centerTitle: true,
+        iconTheme: IconThemeData(color: cs.onSurface),
+        title: Text(
+          appBarTitle,
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 15,
+            color: cs.onSurface,
+            letterSpacing: 1.5,
+          ),
         ),
-        bottom: const PreferredSize(
-          preferredSize: Size.fromHeight(1),
-          child: Divider(height: 1),
+        bottom: PreferredSize(
+          preferredSize: const Size.fromHeight(1),
+          child: Divider(height: 1, color: line),
         ),
-        centerTitle: false,
       ),
-
-      body: CustomScrollView(
-        slivers: [
-          // ── 헤더: 이니셜 원 + 카테고리 카운트
-          SliverToBoxAdapter(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 10),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  // ✅ 브랜드 이니셜 원
-                  Container(
-                    width: 72,
-                    height: 72,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: const Color(0xffd6d6d6),
-                      border: Border.all(color: line),
-                    ),
-                    child: Text(
-                      _initial(),
-                      style: const TextStyle(
-                        fontSize: 26,
-                        fontWeight: FontWeight.w900,
-                        color: Colors.black87,
-                        letterSpacing: 0.2,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 16),
-
-                  // 카운트 6칸 (2줄)
-                  Expanded(
-                    child: FutureBuilder<List<int>>(
-                      future: Future.wait<int>([
-                        _count(cat: null),
-                        _count(cat: 'ring'),
-                        _count(cat: 'necklace'),
-                        _count(cat: 'bracelet'),
-                        _count(cat: 'earring'),
-                        _count(cat: 'acc'),
-                      ]),
-                      builder: (context, snap) {
-                        final counts = snap.data ?? const [0, 0, 0, 0, 0, 0];
-
-                        Widget cell(String label, int n) => Expanded(
-                          child: Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              Text('$n',
-                                  style: const TextStyle(
-                                      fontSize: 18,
-                                      fontWeight: FontWeight.w800)),
-                              const SizedBox(height: 4),
-                              Text(label,
-                                  style: const TextStyle(
-                                      fontSize: 12,
-                                      color: Colors.black54)),
-                            ],
+      body: Center(
+        // 🌟 웹에서 너무 넓게 퍼지지 않도록 최대 너비 제한
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 1000),
+          child: CustomScrollView(
+            physics: const BouncingScrollPhysics(),
+            slivers: [
+              // ── 프로필 헤더 ──
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 28, 24, 20),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 76,
+                        height: 76,
+                        decoration: BoxDecoration(
+                          color: cs.onSurface.withOpacity(0.06),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Center(
+                          child: Text(
+                            _initial(),
+                            style: TextStyle(fontSize: 30, fontWeight: FontWeight.w900, color: cs.onSurface),
                           ),
-                        );
-
-                        return Column(
+                        ),
+                      ),
+                      const SizedBox(width: 24),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Row(children: [
-                              cell('전체', counts[0]),
-                              cell('반지', counts[1]),
-                              cell('목걸이', counts[2]),
-                            ]),
-                            const SizedBox(height: 8),
-                            Row(children: [
-                              cell('팔찌', counts[3]),
-                              cell('귀걸이', counts[4]),
-                              cell('기타', counts[5]),
-                            ]),
+                            Text(
+                              _isAllBrand ? '전체 컬렉션' : widget.brandKor,
+                              style: TextStyle(
+                                fontSize: 24,
+                                fontWeight: FontWeight.w900,
+                                color: cs.onSurface,
+                                letterSpacing: -0.8,
+                              ),
+                            ),
+                            const SizedBox(height: 6),
+                            FutureBuilder<int>(
+                              future: _count(cat: null),
+                              builder: (context, snap) {
+                                return Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: cs.onSurface.withOpacity(0.04),
+                                    borderRadius: BorderRadius.circular(6),
+                                  ),
+                                  child: Text(
+                                    'TOTAL ${snap.data ?? 0}',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w800,
+                                      color: cs.onSurface.withOpacity(0.5),
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                           ],
-                        );
-                      },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              // ── 아이콘 + 숫자 탭바 ──
+              SliverToBoxAdapter(
+                child: Container(
+                  margin: const EdgeInsets.only(top: 8),
+                  decoration: BoxDecoration(
+                    border: Border(
+                      top: BorderSide(color: line.withOpacity(0.5), width: 0.5),
+                      bottom: BorderSide(color: line, width: 0.5),
                     ),
                   ),
-                ],
-              ),
-            ),
-          ),
+                  child: FutureBuilder<List<int>>(
+                    future: Future.wait<int>(_tabs.map((t) => _count(cat: t.code))),
+                    builder: (context, snap) {
+                      final counts = snap.data ?? List.filled(_tabs.length, 0);
 
-          // ── 탭바 (텍스트만)
-          SliverToBoxAdapter(
-            child: Container(
-              decoration: const BoxDecoration(
-                border: Border(
-                  top: BorderSide(color: line),
-                  bottom: BorderSide(color: line),
-                ),
-              ),
-              child: TabBar(
-                controller: _tab,
-                labelColor: Colors.black,
-                unselectedLabelColor: Colors.black54,
-                indicatorColor: Colors.black,
-                tabs: _tabs
-                    .map((t) => Tab(
-                  child: Text(
-                    t.label,
-                    style: const TextStyle(
-                        fontWeight: FontWeight.w700, fontSize: 13),
+                      return TabBar(
+                        controller: _tab,
+                        isScrollable: true,
+                        tabAlignment: TabAlignment.center,
+                        labelColor: cs.onSurface,
+                        unselectedLabelColor: cs.onSurface.withOpacity(0.25),
+                        indicatorColor: cs.onSurface,
+                        indicatorWeight: 3,
+                        indicatorSize: TabBarIndicatorSize.label,
+                        dividerColor: Colors.transparent,
+                        tabs: List.generate(_tabs.length, (idx) {
+                          final t = _tabs[idx];
+                          final isSel = _tab.index == idx;
+                          final count = counts[idx];
+
+                          return Tab(
+                            height: 64,
+                            child: Column(
+                              mainAxisAlignment: MainAxisAlignment.center,
+                              children: [
+                                if (t.asset != null)
+                                  Image.asset(
+                                    t.asset!,
+                                    width: 24,
+                                    height: 24,
+                                    color: isSel ? cs.onSurface : cs.onSurface.withOpacity(0.25),
+                                  )
+                                else
+                                  Icon(t.icon, size: 24),
+                                const SizedBox(height: 6),
+                                Text(
+                                  '$count',
+                                  style: TextStyle(
+                                    fontSize: 13,
+                                    fontWeight: isSel ? FontWeight.w900 : FontWeight.w700,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        }),
+                        onTap: (index) => setState(() {}),
+                      );
+                    },
                   ),
-                ))
-                    .toList(),
-              ),
-            ),
-          ),
-
-          // ── 탭 컨텐츠: 3열 이미지 그리드
-          SliverFillRemaining(
-            child: TabBarView(
-              controller: _tab,
-              children: _tabs
-                  .map(
-                    (t) => _BrandPostGridImagesOnly(
-                  brandKor: widget.brandKor,
-                  category: t.code,
                 ),
-              )
-                  .toList(),
-            ),
+              ),
+
+              // ── 반응형 그리드 컨텐츠 ──
+              SliverFillRemaining(
+                child: TabBarView(
+                  controller: _tab,
+                  children: _tabs.map((t) => _BrandFixedGrid(
+                    brandKor: widget.brandKor,
+                    category: t.code,
+                    theme: theme,
+                  )).toList(),
+                ),
+              ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
@@ -241,92 +284,108 @@ class _BrandProfilePageState extends State<BrandProfilePage>
 class _CatTab {
   final String label;
   final String? code;
-  const _CatTab({required this.label, required this.code});
+  final IconData? icon;
+  final String? asset;
+  const _CatTab({required this.label, required this.code, this.icon, this.asset});
 }
 
-class _BrandPostGridImagesOnly extends StatelessWidget {
+// 🌟 반응형 3~6열 4:5 비율 고정 그리드 위젯
+class _BrandFixedGrid extends StatelessWidget {
   final String brandKor;
   final String? category;
-  const _BrandPostGridImagesOnly({required this.brandKor, this.category});
+  final ThemeData theme;
 
-  Query<Map<String, dynamic>> _query() {
-    Query<Map<String, dynamic>> q =
-    FirebaseFirestore.instance.collection('posts');
-    if (brandKor.trim().toUpperCase() != 'ALL') {
-      q = q.where('brand', isEqualTo: brandKor);
-    }
-    if (category != null) {
-      q = q.where('category', isEqualTo: category);
-    }
+  const _BrandFixedGrid({required this.brandKor, this.category, required this.theme});
+
+  bool get _isAllBrand => brandKor.trim().toUpperCase() == 'ALL';
+
+  Query<Map<String, dynamic>> _baseQuery() {
+    Query<Map<String, dynamic>> q = FirebaseFirestore.instance.collection('posts');
+    if (!_isAllBrand) q = q.where('brand', isEqualTo: brandKor);
     return q;
+  }
+
+  Stream<List<QueryDocumentSnapshot<Map<String, dynamic>>>> _docsStream() {
+    final base = _baseQuery();
+    if (category == null) return base.snapshots().map((snap) => snap.docs);
+    final s1 = base.where('categories', arrayContains: category).snapshots();
+    return s1.asyncMap((a) async {
+      final b = await base.where('category', isEqualTo: category).get();
+      final map = <String, QueryDocumentSnapshot<Map<String, dynamic>>>{};
+      for (final d in a.docs) map[d.id] = d;
+      for (final d in b.docs) map[d.id] = d;
+      return map.values.toList();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    const line = Color(0xffe6e6e6);
+    final isDark = theme.brightness == Brightness.dark;
 
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _query().snapshots(),
+    return StreamBuilder<List<QueryDocumentSnapshot<Map<String, dynamic>>>>(
+      stream: _docsStream(),
       builder: (context, snap) {
         if (snap.connectionState == ConnectionState.waiting) {
-          return const Center(
-              child: CircularProgressIndicator(strokeWidth: 1.5));
+          return Center(child: CircularProgressIndicator(strokeWidth: 2, color: theme.colorScheme.onSurface));
         }
-        if (!snap.hasData || snap.data!.docs.isEmpty) {
-          return const Center(
-              child: Text('게시물이 없습니다.', style: TextStyle(color: Colors.black54)));
+        final docs = snap.data ?? [];
+        if (docs.isEmpty) {
+          return Center(child: Text('게시물이 없습니다.', style: TextStyle(color: theme.colorScheme.onSurface.withOpacity(0.4))));
         }
 
-        final docs = [...snap.data!.docs]..sort((a, b) {
-          final ta = a.data()['createdAt'];
-          final tb = b.data()['createdAt'];
-          final da = (ta is Timestamp) ? ta.toDate() : DateTime(1970);
-          final db = (tb is Timestamp) ? tb.toDate() : DateTime(1970);
-          return db.compareTo(da);
-        });
+        int _sortVal(Map<String, dynamic> m) {
+          final sk = m['sortKey'];
+          if (sk is int) return sk;
+          final ts = m['createdAt'];
+          return ts is Timestamp ? ts.millisecondsSinceEpoch : 0;
+        }
+        final sorted = [...docs]..sort((a, b) => _sortVal(b.data()).compareTo(_sortVal(a.data())));
 
-        return GridView.builder(
-          padding: EdgeInsets.zero,
-          itemCount: docs.length,
-          gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: 3,
-            mainAxisSpacing: 0,
-            crossAxisSpacing: 0,
-            childAspectRatio: 1,
-          ),
-          itemBuilder: (_, i) {
-            final doc = docs[i];
-            final d = doc.data();
-            final img = (d['imageUrl'] ?? '').toString();
+        // 🌟 화면 너비에 따라 열 개수를 계산하는 LayoutBuilder
+        return LayoutBuilder(
+            builder: (context, constraints) {
+              final double width = constraints.maxWidth;
 
-            return InkWell(
-              onTap: () {
-                PostOverlay.show(context, docs: docs, startIndex: i);
-              },
-              child: Container(
-                decoration: const BoxDecoration(
-                  border: Border(
-                    top: BorderSide(color: line, width: 1),
-                    right: BorderSide(color: line, width: 1),
-                    bottom: BorderSide(color: line, width: 1),
-                    left: BorderSide(color: line, width: 1),
-                  ),
+              // 600px 미만(모바일): 3열
+              // 900px 미만: 4열
+              // 1200px 미만: 5열
+              // 그 이상: 6열
+              int crossAxisCount = 3;
+              if (width >= 1200) {
+                crossAxisCount = 6;
+              } else if (width >= 900) {
+                crossAxisCount = 5;
+              } else if (width >= 600) {
+                crossAxisCount = 4;
+              }
+
+              return GridView.builder(
+                padding: const EdgeInsets.only(top: 4, bottom: 60),
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: crossAxisCount,
+                  mainAxisSpacing: 1.5,
+                  crossAxisSpacing: 1.5,
+                  childAspectRatio: 0.8, // ✅ 4:5 비율 고정
                 ),
-                child: (img.isNotEmpty)
-                    ? Image.network(
-                  img,
-                  fit: BoxFit.cover,
-                  errorBuilder: (_, __, ___) => const Center(
-                    child: Icon(Icons.broken_image_outlined,
-                        color: Colors.black26),
-                  ),
-                )
-                    : const Center(
-                    child: Icon(Icons.image_not_supported,
-                        color: Colors.black26)),
-              ),
-            );
-          },
+                itemCount: sorted.length,
+                itemBuilder: (ctx, i) {
+                  final doc = sorted[i];
+                  final d = doc.data();
+                  final img = buildThumbUrl((d['thumbUrl'] ?? d['imageUrl'] ?? '').toString());
+
+                  return InkWell(
+                    onTap: () => PostOverlay.show(context, docs: sorted, startIndex: i),
+                    child: CachedNetworkImage(
+                      imageUrl: img,
+                      fit: BoxFit.cover,
+                      fadeInDuration: const Duration(milliseconds: 100),
+                      placeholder: (_, __) => Container(color: isDark ? const Color(0xFF2A2F38) : const Color(0xFFE0E0E0)),
+                      errorWidget: (_, __, ___) => Container(color: isDark ? const Color(0xFF1A1D22) : Colors.black12),
+                    ),
+                  );
+                },
+              );
+            }
         );
       },
     );

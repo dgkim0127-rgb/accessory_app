@@ -1,46 +1,63 @@
-// lib/utils/cloudinary_image_utils.dart
+// lib/utils/cloudinary_image_utils.dart ✅ 최종
 //
-// Cloudinary URL 에서 썸네일 / 미디엄 사이즈 변환을 만들기 위한 헬퍼.
-// URL 안에 "/upload/" 구간을 찾아서 그 뒤에 변환 파라미터를 삽입하는 방식.
-// (Cloudinary가 아니라면 원본 URL 그대로 리턴됨)
+// ✅ 목적
+// - Cloudinary URL이면 "/upload/" 뒤에 변환 파라미터를 삽입해서
+//   "적당히 선명 + 느려지지 않게" 로딩 최적화
+//
+// ✅ 규칙(이번 최종 세팅)
+// - thumb  : 480x480, q_auto:eco (그리드)
+// - slider : 900x900, q_auto:good (홈 상단 슬라이더)
+// - medium : 1600px, q_auto:good (상세 화면용)  ← 원본까지는 안 가고 “적당히 선명”
+// - original: 변환 없이 원본(필요할 때만)
+//
+// ⚠️ 이미 변환이 붙어 있는 URL(f_auto/q_auto/w_/h_/c_)이면 그대로 둠
 
 String _applyCloudinaryTransform(String url, String transform) {
   if (url.isEmpty) return url;
 
   const marker = '/upload/';
   final idx = url.indexOf(marker);
-  if (idx == -1) {
-    // Cloudinary 형식이 아니면 그대로 사용
-    return url;
-  }
+  if (idx == -1) return url;
 
   final before = url.substring(0, idx + marker.length);
   final after = url.substring(idx + marker.length);
 
-  // 이미 변환 파라미터가 붙어 있으면 그대로 둔다
+  // 이미 변환이 붙어있으면 그대로 (중복 변환 방지)
   if (after.startsWith('f_auto') ||
       after.startsWith('q_auto') ||
       after.startsWith('w_') ||
-      after.startsWith('h_')) {
+      after.startsWith('h_') ||
+      after.startsWith('c_')) {
     return url;
   }
 
   return '$before$transform$after';
 }
 
-/// 홈 피드/그리드용 작은 썸네일
+/// ✅ 홈 그리드/리스트: 480 정사각 + eco (빠름)
 String buildThumbUrl(String url) {
   return _applyCloudinaryTransform(
     url,
-    // 정사각형 400 x 400, 자동 포맷, 저품질
-    'w_400,h_400,c_fill,f_auto,q_auto:low/',
+    'f_auto,q_auto:eco,w_480,h_480,c_fill,g_auto/',
   );
 }
 
-/// 상세 화면용 중간 사이즈 (예: 1280px)
+/// ✅ 홈 상단 슬라이더: 900 정사각 + good (선명)
+String buildSliderUrl(String url) {
+  return _applyCloudinaryTransform(
+    url,
+    'f_auto,q_auto:good,w_900,h_900,c_fill,g_auto/',
+  );
+}
+
+/// ✅ 상세 화면: 1600px 제한 + good (원본급 느낌인데 너무 무겁진 않게)
+/// - 세로/가로 긴 사진도 비율 유지하려고 h 지정 안 함
 String buildMediumUrl(String url) {
   return _applyCloudinaryTransform(
     url,
-    'w_1280,f_auto,q_auto/',
+    'f_auto,q_auto:good,w_1600,c_limit/',
   );
 }
+
+/// ✅ 정말 원본이 필요할 때만 사용(기본은 쓰지 말기)
+String buildOriginalUrl(String url) => url;

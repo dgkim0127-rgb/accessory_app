@@ -1,46 +1,36 @@
 // lib/services/cloudinary_service.dart
-// ------------------------------------------------------------
-// Cloudinary 업로드 서비스 (이미지 + 동영상 지원)
-//
-// - uploadImageBytes()  : resource_type = "image"
-// - uploadVideoBytes()  : resource_type = "video"
-//
-// - Cloudinary unsigned upload 방식 사용
-// ------------------------------------------------------------
-
 import 'dart:convert';
 import 'dart:typed_data';
-
 import 'package:http/http.dart' as http;
 
+/// Cloudinary 업로드 서비스 (이미지/비디오)
+/// ✅ Unsigned Upload Preset 방식
+/// - 클라이언트(Flutter/Web)에서 안전하게 업로드 가능
+/// - API Key / API Secret 사용하지 않음
 class CloudinaryService {
-  // ⚡ 너가 설정한 클라우드명 + 업로드 preset
-  static const String _cloudName = 'dh1hsucpl';
-  static const String _uploadPreset = 'accessory_app_upload';
+  CloudinaryService._();
 
-  // 업로드 URL 생성기
+  // ✅ 네 Cloudinary 정보로 고정 (스크린샷 기준)
+  static const String cloudName = 'dh1hsucpl';
+  static const String uploadPreset = 'accessory_app_upload';
+
   static Uri _imageUploadUri() =>
-      Uri.parse('https://api.cloudinary.com/v1_1/$_cloudName/image/upload');
+      Uri.parse('https://api.cloudinary.com/v1_1/$cloudName/image/upload');
 
   static Uri _videoUploadUri() =>
-      Uri.parse('https://api.cloudinary.com/v1_1/$_cloudName/video/upload');
+      Uri.parse('https://api.cloudinary.com/v1_1/$cloudName/video/upload');
 
-  // ─────────────────────────────────────────────────────────────
-  // 1) 이미지 업로드 (resource_type = "image")
-  // ─────────────────────────────────────────────────────────────
+  /// 이미지 bytes 업로드 (unsigned)
   static Future<String> uploadImageBytes({
     required Uint8List data,
     required String fileName,
-    String? folder,
+    required String folder,
   }) async {
-    final request = http.MultipartRequest('POST', _imageUploadUri())
-      ..fields['upload_preset'] = _uploadPreset;
+    final req = http.MultipartRequest('POST', _imageUploadUri());
+    req.fields['upload_preset'] = uploadPreset;
+    req.fields['folder'] = folder;
 
-    if (folder != null && folder.isNotEmpty) {
-      request.fields['folder'] = folder;
-    }
-
-    request.files.add(
+    req.files.add(
       http.MultipartFile.fromBytes(
         'file',
         data,
@@ -48,39 +38,30 @@ class CloudinaryService {
       ),
     );
 
-    final response = await request.send();
-    final body = await response.stream.bytesToString();
+    final res = await req.send();
+    final body = await res.stream.bytesToString();
 
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      final json = jsonDecode(body) as Map<String, dynamic>;
-      final url = (json['secure_url'] ?? json['url'])?.toString() ?? '';
-      if (url.isEmpty) {
-        throw Exception('Cloudinary 응답에 URL이 없습니다: $body');
-      }
-      return url;
-    } else {
-      throw Exception(
-        'Cloudinary 이미지 업로드 실패 (${response.statusCode}): $body',
-      );
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception('Cloudinary image upload failed: ${res.statusCode} $body');
     }
+
+    final jsonMap = json.decode(body) as Map<String, dynamic>;
+    final url = (jsonMap['secure_url'] ?? jsonMap['url'] ?? '').toString();
+    if (url.isEmpty) throw Exception('Cloudinary image upload: no url in response');
+    return url;
   }
 
-  // ─────────────────────────────────────────────────────────────
-  // 2) 동영상 업로드 (resource_type = "video")
-  // ─────────────────────────────────────────────────────────────
+  /// 비디오 bytes 업로드 (unsigned)
   static Future<String> uploadVideoBytes({
     required Uint8List data,
     required String fileName,
-    String? folder,
+    required String folder,
   }) async {
-    final request = http.MultipartRequest('POST', _videoUploadUri())
-      ..fields['upload_preset'] = _uploadPreset;
+    final req = http.MultipartRequest('POST', _videoUploadUri());
+    req.fields['upload_preset'] = uploadPreset;
+    req.fields['folder'] = folder;
 
-    if (folder != null && folder.isNotEmpty) {
-      request.fields['folder'] = folder;
-    }
-
-    request.files.add(
+    req.files.add(
       http.MultipartFile.fromBytes(
         'file',
         data,
@@ -88,20 +69,16 @@ class CloudinaryService {
       ),
     );
 
-    final response = await request.send();
-    final body = await response.stream.bytesToString();
+    final res = await req.send();
+    final body = await res.stream.bytesToString();
 
-    if (response.statusCode >= 200 && response.statusCode < 300) {
-      final json = jsonDecode(body) as Map<String, dynamic>;
-      final url = (json['secure_url'] ?? json['url'])?.toString() ?? '';
-      if (url.isEmpty) {
-        throw Exception('Cloudinary 응답에 URL이 없습니다: $body');
-      }
-      return url;
-    } else {
-      throw Exception(
-        'Cloudinary 동영상 업로드 실패 (${response.statusCode}): $body',
-      );
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      throw Exception('Cloudinary video upload failed: ${res.statusCode} $body');
     }
+
+    final jsonMap = json.decode(body) as Map<String, dynamic>;
+    final url = (jsonMap['secure_url'] ?? jsonMap['url'] ?? '').toString();
+    if (url.isEmpty) throw Exception('Cloudinary video upload: no url in response');
+    return url;
   }
 }

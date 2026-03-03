@@ -1,15 +1,21 @@
-// lib/widgets/app_cached_image.dart
-// ------------------------------------------------------------
-// 공통 이미지 로더 위젯
-// - cached_network_image 기반
-// - 로딩 인디케이터 / 에러 위젯 기본 제공
-// - BoxFit / width / height / radius 커스터마이징 가능
-// - Cloudinary 이미지면 f_auto,q_auto:eco,w_1080 적용해서
-//   용량을 KB 단위까지 줄이면서 화질 최대한 유지
-// ------------------------------------------------------------
+// lib/widgets/app_cached_image.dart ✅ 최종 (화질저하 유발 코드 제거/정리)
+// ✅ 변경점
+// - 예전: w_1080 고정 + q_auto:eco 고정 → 상세에서도 뭉개져 보일 수 있음
+// - 최종: 목적별(sizeHint)로 URL을 변환해서 불러옴 (thumb/medium/slider)
+// - memCacheWidth/Height는 "메모리 절약"일 뿐 원본 화질을 강제로 낮추진 않지만,
+//   너무 작은 값이면 확대 시 뭉개져 보여서 목적별로 맞춤.
 
 import 'package:flutter/material.dart';
 import 'package:cached_network_image/cached_network_image.dart';
+
+import '../utils/cloudinary_image_utils.dart';
+
+enum AppImageHint {
+  thumb,  // 그리드 썸네일
+  medium, // 상세
+  slider, // 상단 슬라이더
+  original, // 변환 없이(권장X)
+}
 
 class AppCachedImage extends StatelessWidget {
   final String url;
@@ -18,6 +24,9 @@ class AppCachedImage extends StatelessWidget {
   final BoxFit fit;
   final double borderRadius;
 
+  /// ✅ 어떤 용도로 쓰는지 힌트
+  final AppImageHint hint;
+
   const AppCachedImage({
     super.key,
     required this.url,
@@ -25,36 +34,36 @@ class AppCachedImage extends StatelessWidget {
     this.height,
     this.fit = BoxFit.cover,
     this.borderRadius = 0,
+    this.hint = AppImageHint.medium,
   });
 
   @override
   Widget build(BuildContext context) {
-    if (url.isEmpty) {
-      return _errorBox();
-    }
+    if (url.isEmpty) return _errorBox();
 
-    final optimizedUrl = _optimizeCloudinaryImageUrl(url);
+    final optimizedUrl = _pickUrlByHint(url, hint);
+    final cache = _cacheSizeByHint(hint);
 
     final img = CachedNetworkImage(
       imageUrl: optimizedUrl,
       fit: fit,
       width: width,
       height: height,
-      memCacheWidth: 1080,
-      memCacheHeight: 1080,
-      fadeInDuration: const Duration(milliseconds: 180),
+
+      // ✅ 확대/선명도 체감에 직접 영향
+      memCacheWidth: cache.$1,
+      memCacheHeight: cache.$2,
+
+      fadeInDuration: const Duration(milliseconds: 160),
       fadeOutDuration: const Duration(milliseconds: 120),
 
-      // 로딩 중 위젯
       placeholder: (_, __) => const Center(
         child: SizedBox(
-          width: 32,
-          height: 32,
+          width: 30,
+          height: 30,
           child: CircularProgressIndicator(strokeWidth: 2),
         ),
       ),
-
-      // 실패 시 위젯
       errorWidget: (_, __, ___) => _errorBox(),
     );
 
@@ -81,24 +90,31 @@ class AppCachedImage extends StatelessWidget {
       ),
     );
   }
-}
 
-// Cloudinary 이미지 URL 최적화 (f_auto + q_auto:eco + w_1080)
-// → 화질은 유지하면서도 용량을 KB 단위까지 내림
-String _optimizeCloudinaryImageUrl(String url) {
-  const marker = '/upload/';
-  final idx = url.indexOf(marker);
-  if (idx == -1) return url; // Cloudinary 형식이 아니면 그대로
-
-  final before = url.substring(0, idx + marker.length);
-  final after = url.substring(idx + marker.length);
-
-  // 이미 변환 파라미터가 붙어 있으면 그대로 사용
-  if (after.startsWith('f_auto') || after.startsWith('q_auto')) {
-    return url;
+  String _pickUrlByHint(String raw, AppImageHint h) {
+    switch (h) {
+      case AppImageHint.thumb:
+        return buildThumbUrl(raw);
+      case AppImageHint.slider:
+        return buildSliderUrl(raw);
+      case AppImageHint.medium:
+        return buildMediumUrl(raw);
+      case AppImageHint.original:
+        return raw;
+    }
   }
 
-  return '$before'
-      'f_auto,q_auto:eco,w_1080/'
-      '$after';
+  /// (memCacheWidth, memCacheHeight)
+  (int?, int?) _cacheSizeByHint(AppImageHint h) {
+    switch (h) {
+      case AppImageHint.thumb:
+        return (480, 480);
+      case AppImageHint.slider:
+        return (900, 900);
+      case AppImageHint.medium:
+        return (1600, 1600);
+      case AppImageHint.original:
+        return (null, null); // 원본은 캐시 제한 안 둠(메모리 부담)
+    }
+  }
 }
