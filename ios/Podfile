@@ -1,5 +1,4 @@
-# ios/Podfile
-platform :ios, '15.0'
+﻿platform :ios, '15.0'
 
 ENV['COCOAPODS_DISABLE_STATS'] = 'true'
 
@@ -36,8 +35,6 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-
-    # 모든 Pod의 iOS 최소 타겟을 15.0으로 강제
     target.build_configurations.each do |config|
       config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '15.0'
     end
