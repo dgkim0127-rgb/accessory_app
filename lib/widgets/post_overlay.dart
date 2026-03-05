@@ -1308,16 +1308,33 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
 
   @override
   Widget build(BuildContext context) {
+    // ✅ 로딩/디코딩 시간 단축: 화면 크기에 맞춰 decode 사이즈 제한
+    final mq = MediaQuery.of(context);
+    final targetW = (mq.size.width * mq.devicePixelRatio).clamp(600.0, 2400.0).round();
+    final optimizedProvider = ResizeImage(widget.provider, width: targetW);
+
     return InteractiveViewer(
       transformationController: _tc,
       minScale: 1.0,
       maxScale: 4.0,
+      panEnabled: true,
+      scaleEnabled: true,
       onInteractionStart: (_) => _setZooming(true),
+
+      // ✅ 핵심: 손 떼면 항상 원복
       onInteractionEnd: (_) {
         _setZooming(false);
         _resetBack();
       },
-      child: Image(image: widget.provider, fit: widget.fit, filterQuality: FilterQuality.low),
+
+      child: RepaintBoundary(
+        child: Image(
+          image: optimizedProvider,
+          fit: widget.fit,
+          filterQuality: FilterQuality.low,
+          gaplessPlayback: true,
+        ),
+      ),
     );
   }
 }
