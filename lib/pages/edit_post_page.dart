@@ -1,8 +1,9 @@
-// lib/pages/edit_post_page.dart ✅ 최종(디자인 유지 + 브랜드 검색 + 웹 호환 + 안정성)
+// lib/pages/edit_post_page.dart ✅ 최종
 // - 브랜드 시트 검색창 추가
 // - dart:io 제거(웹 빌드 OK) → XFile.readAsBytes()로 프리뷰
 // - withOpacity -> withValues(alpha: )
 // - 저장: sortKey 최상단 + updatedAt + 서버 강제 get + (기존URL을 XFile로 변환 업로드 제거)
+// - 수정 페이지 미리보기/썸네일: 원본 비율 유지(BoxFit.contain) + 세로 높이 280 유지
 
 import 'dart:typed_data';
 import 'dart:ui';
@@ -90,20 +91,29 @@ class _EditPostPageState extends State<EditPostPage> {
   void initState() {
     super.initState();
 
-    _titleCtrl = TextEditingController(text: (widget.initialData['title'] ?? '').toString());
-    _descCtrl = TextEditingController(text: (widget.initialData['description'] ?? '').toString());
-    _codeCtrl = TextEditingController(text: (widget.initialData['itemCode'] ?? '').toString());
+    _titleCtrl = TextEditingController(
+      text: (widget.initialData['title'] ?? '').toString(),
+    );
+    _descCtrl = TextEditingController(
+      text: (widget.initialData['description'] ?? '').toString(),
+    );
+    _codeCtrl = TextEditingController(
+      text: (widget.initialData['itemCode'] ?? '').toString(),
+    );
 
     // 브랜드 초기값
     final rawKor = (widget.initialData['brand'] ?? '').toString();
     _brandKor = rawKor.isEmpty ? null : rawKor;
     _brandEng = (widget.initialData['brandEng'] ?? '').toString();
-    _brandLogoUrl = (widget.initialData['brandLogoUrl'] ?? widget.initialData['logoUrl'] ?? '').toString();
+    _brandLogoUrl =
+        (widget.initialData['brandLogoUrl'] ?? widget.initialData['logoUrl'] ?? '')
+            .toString();
 
     // 카테고리 초기값
     final cats = widget.initialData['categories'];
     if (cats is List) {
-      final list = cats.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
+      final list =
+      cats.map((e) => e.toString()).where((e) => e.isNotEmpty).toList();
       if (list.isNotEmpty) {
         _categories
           ..clear()
@@ -134,13 +144,17 @@ class _EditPostPageState extends State<EditPostPage> {
     // 360 초기값
     final spins = widget.initialData['spinImages'];
     if (spins is List && spins.isNotEmpty) {
-      _spinExisting.addAll(spins.map((e) => (e ?? '').toString()).where((s) => s.isNotEmpty));
+      _spinExisting.addAll(
+        spins.map((e) => (e ?? '').toString()).where((s) => s.isNotEmpty),
+      );
     }
 
     // 동영상 초기값
     final vids = widget.initialData['videos'];
     if (vids is List && vids.isNotEmpty) {
-      _videoExisting.addAll(vids.map((e) => (e ?? '').toString()).where((s) => s.isNotEmpty));
+      _videoExisting.addAll(
+        vids.map((e) => (e ?? '').toString()).where((s) => s.isNotEmpty),
+      );
     }
 
     FirebaseAuth.instance.currentUser?.getIdToken(true).catchError((_) {});
@@ -164,14 +178,20 @@ class _EditPostPageState extends State<EditPostPage> {
           .orderBy('rank')
           .get(const GetOptions(source: Source.server));
 
-      _brands = snap.docs.map((d) {
+      _brands = snap.docs
+          .map((d) {
         final m = d.data();
         return {
-          'kor': (m['nameKor'] ?? m['kor'] ?? m['name'] ?? '').toString().trim(),
+          'kor':
+          (m['nameKor'] ?? m['kor'] ?? m['name'] ?? '').toString().trim(),
           'eng': (m['nameEng'] ?? m['eng'] ?? '').toString().trim(),
-          'logoUrl': (m['logoUrl'] ?? m['profileUrl'] ?? m['imageUrl'] ?? '').toString().trim(),
+          'logoUrl': (m['logoUrl'] ?? m['profileUrl'] ?? m['imageUrl'] ?? '')
+              .toString()
+              .trim(),
         };
-      }).where((b) => (b['kor'] ?? '').trim().isNotEmpty).toList();
+      })
+          .where((b) => (b['kor'] ?? '').trim().isNotEmpty)
+          .toList();
     } catch (_) {
       _brands = [];
     }
@@ -239,7 +259,11 @@ class _EditPostPageState extends State<EditPostPage> {
         final add = <_ImageItem>[];
         for (final f in res.files) {
           if (f.bytes == null) continue;
-          add.add(_ImageItem.file(XFile.fromData(f.bytes!, name: f.name, length: f.size)));
+          add.add(
+            _ImageItem.file(
+              XFile.fromData(f.bytes!, name: f.name, length: f.size),
+            ),
+          );
         }
         setState(() => _images.addAll(add));
       } else {
@@ -361,7 +385,8 @@ class _EditPostPageState extends State<EditPostPage> {
 
     try {
       final brandKor = _brandKor!.trim();
-      final docRef = FirebaseFirestore.instance.collection('posts').doc(widget.postId);
+      final docRef =
+      FirebaseFirestore.instance.collection('posts').doc(widget.postId);
 
       // 업로드 대상: 이미지 중 file 있는 것만
       final pickedList = <XFile>[];
@@ -369,7 +394,8 @@ class _EditPostPageState extends State<EditPostPage> {
         if (it.file != null) pickedList.add(it.file!);
       }
 
-      final totalNewFiles = pickedList.length + _spinPicked.length + _videoPicked.length;
+      final totalNewFiles =
+          pickedList.length + _spinPicked.length + _videoPicked.length;
       int done = 0;
 
       void bumpProgress() {
@@ -481,28 +507,21 @@ class _EditPostPageState extends State<EditPostPage> {
       await docRef.update({
         'title': _titleCtrl.text.trim(),
         'description': _descCtrl.text.trim(),
-
         'brand': brandKor,
         'brandEng': _brandEng ?? '',
         'brandLogoUrl': _brandLogoUrl ?? '',
-
         'itemCode': _codeCtrl.text.trim(),
-
         'categories': categoriesList,
         'category': categoriesList.first,
-
         'images': allImages,
         'thumbImages': allThumbImages,
         'mediumImages': allMediumImages,
         'imageUrl': primaryImageUrl,
         'thumbUrl': primaryThumbUrl,
         'mediumUrl': primaryMediumUrl,
-
         'spinImages': allSpins,
         'videos': allVideos,
-
         'updatedAt': FieldValue.serverTimestamp(),
-
         // ✅ 수정하면 최상단
         'sortKey': DateTime.now().millisecondsSinceEpoch + 1000000000,
       });
@@ -527,6 +546,14 @@ class _EditPostPageState extends State<EditPostPage> {
 
   // ───────── 미리보기(웹/모바일 공통) ─────────
 
+  Widget _previewImageBox(Widget image) {
+    return Container(
+      color: const Color(0xFFF4F4F4),
+      alignment: Alignment.center,
+      child: image,
+    );
+  }
+
   Widget _buildMediaPage(int index) {
     final it = _images[index];
 
@@ -535,10 +562,13 @@ class _EditPostPageState extends State<EditPostPage> {
       return Stack(
         fit: StackFit.expand,
         children: [
-          Image.network(
-            url,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => const Center(child: Icon(Icons.broken_image_outlined)),
+          _previewImageBox(
+            Image.network(
+              url,
+              fit: BoxFit.contain,
+              errorBuilder: (_, __, ___) =>
+              const Center(child: Icon(Icons.broken_image_outlined)),
+            ),
           ),
           Positioned(
             left: 8,
@@ -561,9 +591,19 @@ class _EditPostPageState extends State<EditPostPage> {
           future: x.readAsBytes(),
           builder: (context, snap) {
             if (!snap.hasData) {
-              return Container(color: Theme.of(context).colorScheme.onSurface.withValues(alpha: 0.06));
+              return Container(
+                color: Theme.of(context)
+                    .colorScheme
+                    .onSurface
+                    .withValues(alpha: 0.06),
+              );
             }
-            return Image.memory(snap.data!, fit: BoxFit.cover);
+            return _previewImageBox(
+              Image.memory(
+                snap.data!,
+                fit: BoxFit.contain,
+              ),
+            );
           },
         ),
         Positioned(
@@ -584,49 +624,59 @@ class _EditPostPageState extends State<EditPostPage> {
 
     return SizedBox(
       height: 280,
-      child: Stack(
-        children: [
-          if (hasMedia)
-            PageView.builder(
-              controller: _pageCtrl,
-              itemCount: _totalMediaCount,
-              onPageChanged: (i) => setState(() => _currentPage = i),
-              itemBuilder: (context, index) => _buildMediaPage(index),
-            )
-          else
-            InkWell(
-              onTap: _pickImages,
-              child: Container(
-                color: const Color(0xFFF4F4F4),
-                child: const Center(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(Icons.add_photo_alternate_outlined, size: 40),
-                      SizedBox(height: 8),
-                      Text('사진을 추가해주세요'),
-                    ],
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Stack(
+          children: [
+            if (hasMedia)
+              PageView.builder(
+                controller: _pageCtrl,
+                itemCount: _totalMediaCount,
+                onPageChanged: (i) => setState(() => _currentPage = i),
+                itemBuilder: (context, index) => _buildMediaPage(index),
+              )
+            else
+              InkWell(
+                onTap: _pickImages,
+                child: Container(
+                  color: const Color(0xFFF4F4F4),
+                  child: const Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.add_photo_alternate_outlined, size: 40),
+                        SizedBox(height: 8),
+                        Text('사진을 추가해주세요'),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-          if (hasMedia)
-            Positioned(
-              right: 8,
-              top: 8,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.55),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Text(
-                  '${_currentPage + 1} / $_totalMediaCount',
-                  style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+            if (hasMedia)
+              Positioned(
+                right: 8,
+                top: 8,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 4,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '${_currentPage + 1} / $_totalMediaCount',
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -637,9 +687,15 @@ class _EditPostPageState extends State<EditPostPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text('사진 순서 편집', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14)),
+        const Text(
+          '사진 순서 편집',
+          style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14),
+        ),
         const SizedBox(height: 6),
-        const Text('사진을 길게 눌러 순서를 바꿀 수 있어요.', style: TextStyle(fontSize: 11, color: Colors.black54)),
+        const Text(
+          '사진을 길게 눌러 순서를 바꿀 수 있어요.',
+          style: TextStyle(fontSize: 11, color: Colors.black54),
+        ),
         const SizedBox(height: 8),
         SizedBox(
           height: 120,
@@ -652,10 +708,13 @@ class _EditPostPageState extends State<EditPostPage> {
             onReorder: _reorderPhoto,
             itemBuilder: (context, index) {
               final it = _images[index];
-              final key = ValueKey(it.isExisting ? 'url_${it.url}' : 'file_${it.file!.name}_${index}');
+              final key = ValueKey(
+                it.isExisting ? 'url_${it.url}' : 'file_${it.file!.name}_$index',
+              );
 
               final isDragging = _draggingPhotoIndex == index;
-              final dimOthers = _draggingPhotoIndex != null && _draggingPhotoIndex != index;
+              final dimOthers =
+                  _draggingPhotoIndex != null && _draggingPhotoIndex != index;
 
               return ReorderableDelayedDragStartListener(
                 key: key,
@@ -672,20 +731,38 @@ class _EditPostPageState extends State<EditPostPage> {
                           height: 80,
                           decoration: BoxDecoration(
                             borderRadius: BorderRadius.circular(4),
-                            border: isDragging ? Border.all(color: Colors.black, width: 2) : null,
+                            border: isDragging
+                                ? Border.all(color: Colors.black, width: 2)
+                                : null,
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(4),
-                            child: it.isExisting
-                                ? Image.network(it.url!, fit: BoxFit.cover)
-                                : FutureBuilder<Uint8List>(
-                              future: it.file!.readAsBytes(),
-                              builder: (context, snap) {
-                                if (!snap.hasData) {
-                                  return Container(color: Colors.black.withValues(alpha: 0.06));
-                                }
-                                return Image.memory(snap.data!, fit: BoxFit.cover);
-                              },
+                            child: Container(
+                              color: const Color(0xFFF4F4F4),
+                              alignment: Alignment.center,
+                              child: it.isExisting
+                                  ? Image.network(
+                                it.url!,
+                                fit: BoxFit.contain,
+                                errorBuilder: (_, __, ___) =>
+                                const Icon(Icons.broken_image_outlined),
+                              )
+                                  : FutureBuilder<Uint8List>(
+                                future: it.file!.readAsBytes(),
+                                builder: (context, snap) {
+                                  if (!snap.hasData) {
+                                    return Container(
+                                      color: Colors.black.withValues(
+                                        alpha: 0.06,
+                                      ),
+                                    );
+                                  }
+                                  return Image.memory(
+                                    snap.data!,
+                                    fit: BoxFit.contain,
+                                  );
+                                },
+                              ),
                             ),
                           ),
                         ),
@@ -710,7 +787,11 @@ class _EditPostPageState extends State<EditPostPage> {
                               color: Colors.black54,
                               borderRadius: BorderRadius.circular(999),
                             ),
-                            child: const Icon(Icons.close, size: 14, color: Colors.white),
+                            child: const Icon(
+                              Icons.close,
+                              size: 14,
+                              color: Colors.white,
+                            ),
                           ),
                         ),
                       ),
@@ -735,21 +816,28 @@ class _EditPostPageState extends State<EditPostPage> {
 
     // 드롭다운용 브랜드 목록
     final brandItems = _brands
-        .map((b) => DropdownMenuItem<String>(
-      value: b['kor'],
-      child: Row(
-        children: [
-          if ((b['logoUrl'] ?? '').isNotEmpty)
-            CircleAvatar(radius: 10, backgroundImage: NetworkImage(b['logoUrl']!)),
-          if ((b['logoUrl'] ?? '').isNotEmpty) const SizedBox(width: 6),
-          Text(b['kor']!),
-        ],
+        .map(
+          (b) => DropdownMenuItem<String>(
+        value: b['kor'],
+        child: Row(
+          children: [
+            if ((b['logoUrl'] ?? '').isNotEmpty)
+              CircleAvatar(
+                radius: 10,
+                backgroundImage: NetworkImage(b['logoUrl']!),
+              ),
+            if ((b['logoUrl'] ?? '').isNotEmpty) const SizedBox(width: 6),
+            Text(b['kor']!),
+          ],
+        ),
       ),
-    ))
+    )
         .toList();
 
     String? brandValue = _brandKor;
-    if (brandValue != null && _brands.isNotEmpty && !_brands.any((b) => b['kor'] == brandValue)) {
+    if (brandValue != null &&
+        _brands.isNotEmpty &&
+        !_brands.any((b) => b['kor'] == brandValue)) {
       brandValue = null;
     }
 
@@ -765,8 +853,14 @@ class _EditPostPageState extends State<EditPostPage> {
             onPressed: () => Navigator.pop(context),
           ),
         ),
-        title: Text('컬렉션 수정',
-            style: TextStyle(fontWeight: FontWeight.w900, fontSize: 16, color: cs.onSurface)),
+        title: Text(
+          '컬렉션 수정',
+          style: TextStyle(
+            fontWeight: FontWeight.w900,
+            fontSize: 16,
+            color: cs.onSurface,
+          ),
+        ),
       ),
       body: Stack(
         children: [
@@ -789,7 +883,6 @@ class _EditPostPageState extends State<EditPostPage> {
                         const SizedBox(height: 12),
                         _buildPhotoReorderRow(),
                         const SizedBox(height: 14),
-
                         Row(
                           children: [
                             ElevatedButton.icon(
@@ -800,17 +893,22 @@ class _EditPostPageState extends State<EditPostPage> {
                                 foregroundColor: Colors.black,
                                 side: const BorderSide(color: Color(0xffe6e6e6)),
                               ),
-                              icon: const Icon(Icons.photo_library_outlined, size: 18),
+                              icon: const Icon(
+                                Icons.photo_library_outlined,
+                                size: 18,
+                              ),
                               label: const Text('사진 추가'),
                             ),
                             const SizedBox(width: 10),
                             Text(
                               '총 $_totalMediaCount개',
-                              style: const TextStyle(fontSize: 12, color: Colors.black54),
+                              style: const TextStyle(
+                                fontSize: 12,
+                                color: Colors.black54,
+                              ),
                             ),
                           ],
                         ),
-
                         const SizedBox(height: 28),
                         _sectionTitle('기본 정보', cs),
                         const SizedBox(height: 16),
@@ -823,24 +921,35 @@ class _EditPostPageState extends State<EditPostPage> {
                             child: Container(
                               padding: const EdgeInsets.all(20),
                               decoration: BoxDecoration(
-                                color: isDark ? const Color(0xFF1A1D22) : const Color(0xFFF6F6F6),
+                                color: isDark
+                                    ? const Color(0xFF1A1D22)
+                                    : const Color(0xFFF6F6F6),
                                 borderRadius: BorderRadius.circular(20),
                               ),
                               child: Row(
                                 children: [
-                                  Icon(Icons.business_center_rounded,
-                                      size: 20, color: Colors.grey.withValues(alpha: 0.8)),
+                                  Icon(
+                                    Icons.business_center_rounded,
+                                    size: 20,
+                                    color:
+                                    Colors.grey.withValues(alpha: 0.8),
+                                  ),
                                   const SizedBox(width: 14),
                                   Text(
                                     _brandKor ?? '브랜드를 선택하세요',
                                     style: TextStyle(
                                       fontSize: 15,
                                       fontWeight: FontWeight.w700,
-                                      color: _brandKor == null ? Colors.grey : cs.onSurface,
+                                      color: _brandKor == null
+                                          ? Colors.grey
+                                          : cs.onSurface,
                                     ),
                                   ),
                                   const Spacer(),
-                                  const Icon(Icons.expand_more_rounded, color: Colors.grey),
+                                  const Icon(
+                                    Icons.expand_more_rounded,
+                                    color: Colors.grey,
+                                  ),
                                 ],
                               ),
                             ),
@@ -850,7 +959,13 @@ class _EditPostPageState extends State<EditPostPage> {
                         const SizedBox(height: 16),
 
                         // 카테고리 복수
-                        const Text('카테고리 (복수 선택 가능)', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
+                        const Text(
+                          '카테고리 (복수 선택 가능)',
+                          style: TextStyle(
+                            fontWeight: FontWeight.w700,
+                            fontSize: 15,
+                          ),
+                        ),
                         const SizedBox(height: 8),
                         Wrap(
                           spacing: 8,
@@ -866,16 +981,20 @@ class _EditPostPageState extends State<EditPostPage> {
                               selectedColor: cs.onSurface,
                               checkmarkColor: cs.surface,
                               labelStyle: TextStyle(
-                                color: selected ? cs.surface : cs.onSurface.withValues(alpha: 0.9),
+                                color: selected
+                                    ? cs.surface
+                                    : cs.onSurface.withValues(alpha: 0.9),
                                 fontWeight: FontWeight.w700,
                               ),
-                              side: BorderSide(color: cs.onSurface.withValues(alpha: 0.08)),
+                              side: BorderSide(
+                                color: cs.onSurface.withValues(alpha: 0.08),
+                              ),
                               onSelected: (on) {
                                 setState(() {
                                   if (on) {
                                     _categories.add(code);
                                   } else {
-                                    if (_categories.length <= 1) return; // 최소 1개 유지
+                                    if (_categories.length <= 1) return;
                                     _categories.remove(code);
                                   }
                                 });
@@ -886,14 +1005,33 @@ class _EditPostPageState extends State<EditPostPage> {
 
                         const SizedBox(height: 18),
 
-                        _modernField(_codeCtrl, '품번', '예: AB-1234', Icons.qr_code_scanner, isDark,
-                            required: true),
+                        _modernField(
+                          _codeCtrl,
+                          '품번',
+                          '예: AB-1234',
+                          Icons.qr_code_scanner,
+                          isDark,
+                          required: true,
+                        ),
                         const SizedBox(height: 16),
-                        _modernField(_titleCtrl, '제목', '제목을 입력하세요', Icons.title_rounded, isDark,
-                            required: true),
+                        _modernField(
+                          _titleCtrl,
+                          '제목',
+                          '제목을 입력하세요',
+                          Icons.title_rounded,
+                          isDark,
+                          required: true,
+                        ),
                         const SizedBox(height: 16),
-                        _modernField(_descCtrl, '상세', '상세 설명을 입력하세요', Icons.notes_rounded, isDark,
-                            maxLines: 4, required: false),
+                        _modernField(
+                          _descCtrl,
+                          '상세',
+                          '상세 설명을 입력하세요',
+                          Icons.notes_rounded,
+                          isDark,
+                          maxLines: 4,
+                          required: false,
+                        ),
 
                         const SizedBox(height: 36),
                         _sectionTitle('고급 미디어 (360도 / 영상)', cs),
@@ -915,25 +1053,26 @@ class _EditPostPageState extends State<EditPostPage> {
                                 isSmall: true,
                               ),
                               const SizedBox(height: 8),
-                              if (_spinExisting.isNotEmpty || _spinPicked.isNotEmpty)
+                              if (_spinExisting.isNotEmpty ||
+                                  _spinPicked.isNotEmpty)
                                 _miniStrip(
                                   existingUrls: _spinExisting,
                                   pickedFiles: _spinPicked,
                                   onRemoveExisting: _removeSpinExistingAt,
                                   onRemovePicked: _removeSpinPickedAt,
                                 ),
-
                               const SizedBox(height: 14),
-
                               _MediaSelectorTile(
                                 label: '동영상 추가',
-                                count: _videoExisting.length + _videoPicked.length,
+                                count:
+                                _videoExisting.length + _videoPicked.length,
                                 icon: Icons.videocam_rounded,
                                 onTap: _pickVideos,
                                 isSmall: true,
                               ),
                               const SizedBox(height: 8),
-                              if (_videoExisting.isNotEmpty || _videoPicked.isNotEmpty)
+                              if (_videoExisting.isNotEmpty ||
+                                  _videoPicked.isNotEmpty)
                                 _miniVideoStrip(
                                   existingCount: _videoExisting.length,
                                   pickedCount: _videoPicked.length,
@@ -1000,11 +1139,17 @@ class _EditPostPageState extends State<EditPostPage> {
         hintText: hint,
         prefixIcon: Icon(icon, size: 20, color: Colors.grey),
         filled: true,
-        fillColor: isDark ? const Color(0xFF1A1D22) : const Color(0xFFF6F6F6),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(20), borderSide: BorderSide.none),
+        fillColor:
+        isDark ? const Color(0xFF1A1D22) : const Color(0xFFF6F6F6),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(20),
+          borderSide: BorderSide.none,
+        ),
         contentPadding: const EdgeInsets.all(20),
       ),
-      validator: required ? (v) => (v == null || v.trim().isEmpty) ? '필수 입력 사항입니다' : null : null,
+      validator: required
+          ? (v) => (v == null || v.trim().isEmpty) ? '필수 입력 사항입니다' : null
+          : null,
     );
   }
 
@@ -1024,12 +1169,20 @@ class _EditPostPageState extends State<EditPostPage> {
             const SizedBox(height: 24),
             Text(
               '$_uploadPercent%',
-              style: const TextStyle(color: Colors.white, fontSize: 32, fontWeight: FontWeight.w900),
+              style: const TextStyle(
+                color: Colors.white,
+                fontSize: 32,
+                fontWeight: FontWeight.w900,
+              ),
             ),
             const Text(
               '변경 사항을 저장 중입니다',
-              style: TextStyle(color: Colors.white70, fontSize: 13, fontWeight: FontWeight.w600),
-            )
+              style: TextStyle(
+                color: Colors.white70,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ],
         ),
       ),
@@ -1143,9 +1296,11 @@ class _BrandPickerSheetState extends State<_BrandPickerSheet> {
               ),
             ),
             const SizedBox(height: 14),
-            const Text('브랜드 선택', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900)),
+            const Text(
+              '브랜드 선택',
+              style: TextStyle(fontSize: 17, fontWeight: FontWeight.w900),
+            ),
             const SizedBox(height: 12),
-
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: TextField(
@@ -1177,9 +1332,7 @@ class _BrandPickerSheetState extends State<_BrandPickerSheet> {
                 ),
               ),
             ),
-
             const SizedBox(height: 10),
-
             Expanded(
               child: ListView.builder(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -1194,11 +1347,20 @@ class _BrandPickerSheetState extends State<_BrandPickerSheet> {
                       leading: (logo.isNotEmpty)
                           ? CircleAvatar(backgroundImage: NetworkImage(logo))
                           : CircleAvatar(
-                        backgroundColor: cs.onSurface.withValues(alpha: 0.06),
-                        child: Text(kor.isNotEmpty ? kor.characters.first : 'B',
-                            style: TextStyle(color: cs.onSurface, fontWeight: FontWeight.w900)),
+                        backgroundColor:
+                        cs.onSurface.withValues(alpha: 0.06),
+                        child: Text(
+                          kor.isNotEmpty ? kor.characters.first : 'B',
+                          style: TextStyle(
+                            color: cs.onSurface,
+                            fontWeight: FontWeight.w900,
+                          ),
+                        ),
                       ),
-                      title: Text(kor, style: const TextStyle(fontWeight: FontWeight.w800)),
+                      title: Text(
+                        kor,
+                        style: const TextStyle(fontWeight: FontWeight.w800),
+                      ),
                       subtitle: eng.isEmpty ? null : Text(eng),
                       trailing: widget.selectedKor == kor
                           ? Icon(Icons.check_circle, color: cs.onSurface)
@@ -1221,12 +1383,14 @@ class _BrandPickerSheetState extends State<_BrandPickerSheet> {
 class _ChewyInteraction extends StatefulWidget {
   final Widget child;
   const _ChewyInteraction({required this.child});
+
   @override
   State<_ChewyInteraction> createState() => _ChewyInteractionState();
 }
 
 class _ChewyInteractionState extends State<_ChewyInteraction> {
   bool _down = false;
+
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -1249,6 +1413,7 @@ class _MediaSelectorTile extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
   final bool isSmall;
+
   const _MediaSelectorTile({
     required this.label,
     required this.count,
@@ -1275,17 +1440,37 @@ class _MediaSelectorTile extends StatelessWidget {
             children: [
               Icon(icon, size: 22, color: cs.onSurface),
               const SizedBox(width: 14),
-              Text(label, style: TextStyle(fontWeight: FontWeight.w800, fontSize: isSmall ? 14 : 16)),
+              Text(
+                label,
+                style: TextStyle(
+                  fontWeight: FontWeight.w800,
+                  fontSize: isSmall ? 14 : 16,
+                ),
+              ),
               const Spacer(),
               if (count > 0)
                 Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(color: cs.onSurface, borderRadius: BorderRadius.circular(10)),
-                  child: Text('$count',
-                      style: TextStyle(color: cs.surface, fontWeight: FontWeight.w900, fontSize: 11)),
+                  padding:
+                  const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: cs.onSurface,
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: Text(
+                    '$count',
+                    style: TextStyle(
+                      color: cs.surface,
+                      fontWeight: FontWeight.w900,
+                      fontSize: 11,
+                    ),
+                  ),
                 ),
               const SizedBox(width: 8),
-              Icon(Icons.add_circle_rounded, size: 20, color: cs.onSurface.withValues(alpha: 0.2)),
+              Icon(
+                Icons.add_circle_rounded,
+                size: 20,
+                color: cs.onSurface.withValues(alpha: 0.2),
+              ),
             ],
           ),
         ),
@@ -1339,13 +1524,20 @@ class _ChewyButtonState extends State<_ChewyButton> {
                 color: cs.onSurface.withValues(alpha: 0.3),
                 blurRadius: 20,
                 offset: const Offset(0, 10),
-              )
+              ),
             ],
           ),
           child: Center(
             child: Text(
-              widget.isUploading ? '저장 중 (${widget.percent}%)' : widget.labelIdle,
-              style: TextStyle(color: cs.surface, fontWeight: FontWeight.w900, fontSize: 16, letterSpacing: 0.5),
+              widget.isUploading
+                  ? '저장 중 (${widget.percent}%)'
+                  : widget.labelIdle,
+              style: TextStyle(
+                color: cs.surface,
+                fontWeight: FontWeight.w900,
+                fontSize: 16,
+                letterSpacing: 0.5,
+              ),
             ),
           ),
         ),
@@ -1359,26 +1551,48 @@ class _MiniThumb extends StatelessWidget {
   final XFile? xfile;
   final VoidCallback onRemove;
 
-  const _MiniThumb({required this.onRemove, this.networkUrl, this.xfile});
+  const _MiniThumb({
+    required this.onRemove,
+    this.networkUrl,
+    this.xfile,
+  });
 
   @override
   Widget build(BuildContext context) {
     final child = ClipRRect(
       borderRadius: BorderRadius.circular(4),
-      child: networkUrl != null
-          ? Image.network(networkUrl!, width: 80, height: 80, fit: BoxFit.cover)
-          : FutureBuilder<Uint8List>(
-        future: xfile!.readAsBytes(),
-        builder: (context, snap) {
-          if (!snap.hasData) {
-            return Container(
+      child: Container(
+        width: 80,
+        height: 80,
+        color: const Color(0xFFF4F4F4),
+        alignment: Alignment.center,
+        child: networkUrl != null
+            ? Image.network(
+          networkUrl!,
+          width: 80,
+          height: 80,
+          fit: BoxFit.contain,
+          errorBuilder: (_, __, ___) =>
+          const Icon(Icons.broken_image_outlined),
+        )
+            : FutureBuilder<Uint8List>(
+          future: xfile!.readAsBytes(),
+          builder: (context, snap) {
+            if (!snap.hasData) {
+              return Container(
+                width: 80,
+                height: 80,
+                color: Colors.black.withValues(alpha: 0.06),
+              );
+            }
+            return Image.memory(
+              snap.data!,
               width: 80,
               height: 80,
-              color: Colors.black.withValues(alpha: 0.06),
+              fit: BoxFit.contain,
             );
-          }
-          return Image.memory(snap.data!, width: 80, height: 80, fit: BoxFit.cover);
-        },
+          },
+        ),
       ),
     );
 
@@ -1394,7 +1608,10 @@ class _MiniThumb extends StatelessWidget {
               onTap: onRemove,
               child: Container(
                 padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(999)),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(999),
+                ),
                 child: const Icon(Icons.close, size: 14, color: Colors.white),
               ),
             ),
@@ -1418,8 +1635,17 @@ class _MiniVideoThumb extends StatelessWidget {
           Container(
             width: 80,
             height: 80,
-            decoration: BoxDecoration(color: Colors.black87, borderRadius: BorderRadius.circular(4)),
-            child: const Center(child: Icon(Icons.play_circle_fill, color: Colors.white, size: 32)),
+            decoration: BoxDecoration(
+              color: Colors.black87,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: const Center(
+              child: Icon(
+                Icons.play_circle_fill,
+                color: Colors.white,
+                size: 32,
+              ),
+            ),
           ),
           Positioned(
             right: 2,
@@ -1428,7 +1654,10 @@ class _MiniVideoThumb extends StatelessWidget {
               onTap: onRemove,
               child: Container(
                 padding: const EdgeInsets.all(3),
-                decoration: BoxDecoration(color: Colors.black54, borderRadius: BorderRadius.circular(999)),
+                decoration: BoxDecoration(
+                  color: Colors.black54,
+                  borderRadius: BorderRadius.circular(999),
+                ),
                 child: const Icon(Icons.close, size: 14, color: Colors.white),
               ),
             ),

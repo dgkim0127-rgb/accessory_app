@@ -1,12 +1,11 @@
-// lib/widgets/post_overlay.dart ✅ 최종 (웹 인스타 레이아웃 + 흰색 톤 고정)
-// - 웹(>=1000): 인스타그램 스타일(가운데 카드 + 좌측 미디어 + 우측 패널 + X + 좌/우 이동)
-//   ✅ 단, 검정색은 다크모드 때문이라 했으니: 웹도 "항상 흰색 톤"으로 고정
-// - 모바일: 흰색 꽉찬 화면 + AppBar 뒤로 고정 + 미디어 영역 AspectRatio(안보임 버그 해결)
-// - 브랜드 옆 ⋯(관리자만): 수정/삭제
-// - 좋아요 옆 ⋯ 없음
-// - 일반 등급: 품번(itemCode) 숨김(관리자만)
-// - 사진: 원본 비율 유지(안 잘림) -> BoxFit.contain
-// - Like watch: doc 바뀌면 재구독(didUpdateWidget)
+// lib/widgets/post_overlay.dart ✅ 최종
+// - 웹 상세에서 바깥 큰 화살표 = 게시물 이동
+// - 게시물 안 작은 화살표 = 사진 이동
+// - 점 3개 누르면 그 자리에서 수정/삭제 메뉴 표시
+// - 삭제는 한 번 더 확인
+// - 웹/모바일 공통 적용
+// - 모바일 게시물 사진은 4:5 고정이 아니라 원본 비율 기준으로 표시
+// - 너무 과하게 커지거나 작아지지 않도록 높이 제한 적용
 
 import 'dart:async';
 
@@ -33,7 +32,9 @@ bool _isVideoUrl(String url) {
 
 String _optimizeCloudinaryUrl(String url) {
   if (url.isEmpty || !url.contains('/upload/')) return url;
-  if (url.contains('f_auto') || url.contains('q_auto') || url.contains('w_')) return url;
+  if (url.contains('f_auto') || url.contains('q_auto') || url.contains('w_')) {
+    return url;
+  }
 
   const marker = '/upload/';
   final idx = url.indexOf(marker);
@@ -62,11 +63,16 @@ class _MediaEntry {
   final _MediaKind kind;
   final String url;
   final ImageProvider? provider;
+
   const _MediaEntry._(this.kind, this.url, this.provider);
 
   factory _MediaEntry.image(String url) {
     final u = _optimizeCloudinaryUrl(url);
-    return _MediaEntry._(_MediaKind.image, u, CachedNetworkImageProvider(u));
+    return _MediaEntry._(
+      _MediaKind.image,
+      u,
+      CachedNetworkImageProvider(u),
+    );
   }
 
   factory _MediaEntry.video(String url) {
@@ -90,16 +96,15 @@ class PostOverlay extends StatelessWidget {
         required List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
         required int startIndex,
       }) async {
-    // ✅ 웹: 오버레이(딤) / 모바일: 일반 페이지
     if (kIsWeb) {
       await Navigator.of(context).push(
         PageRouteBuilder(
           opaque: false,
-          // ✅ 흰 톤 카드가 잘 보이도록: 아주 연한 딤
           barrierColor: Colors.black.withValues(alpha: 0.20),
           transitionDuration: const Duration(milliseconds: 160),
           reverseTransitionDuration: const Duration(milliseconds: 140),
-          pageBuilder: (_, __, ___) => PostOverlay(docs: docs, initialIndex: startIndex),
+          pageBuilder: (_, __, ___) =>
+              PostOverlay(docs: docs, initialIndex: startIndex),
           transitionsBuilder: (_, anim, __, child) => FadeTransition(
             opacity: CurvedAnimation(parent: anim, curve: Curves.easeOutCubic),
             child: child,
@@ -192,8 +197,20 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
   }
 
   void _goTo(int idx) {
-    if (!_scrollCtrl.isAttached) return;
+    if (widget.docs.isEmpty) return;
     final target = idx.clamp(0, widget.docs.length - 1);
+
+    final isWebDesktop = kIsWeb && MediaQuery.of(context).size.width >= 1000;
+
+    if (isWebDesktop) {
+      if (target != _activeIndex && mounted) {
+        setState(() => _activeIndex = target);
+      }
+      return;
+    }
+
+    if (!_scrollCtrl.isAttached) return;
+
     _scrollCtrl.scrollTo(
       index: target,
       duration: const Duration(milliseconds: 240),
@@ -210,7 +227,6 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
     final mq = MediaQuery.of(context);
     final isWebDesktop = kIsWeb && mq.size.width >= 1000;
 
-    // ✅ 웹 데스크탑: 인스타그램 스타일(하지만 흰색 톤 고정)
     if (isWebDesktop) {
       final doc = widget.docs[_activeIndex];
 
@@ -218,7 +234,6 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
         backgroundColor: Colors.transparent,
         body: Stack(
           children: [
-            // 바깥 클릭 닫기
             Positioned.fill(
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
@@ -226,16 +241,20 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
               ),
             ),
             Center(
-              child: _WebInstagramLikeViewerLight(
-                doc: doc,
-                isAdmin: _isAdmin,
-                onClose: () => Navigator.pop(context),
-                onPrev: _activeIndex > 0 ? _goPrev : null,
-                onNext: _activeIndex < widget.docs.length - 1 ? _goNext : null,
-                onZoomingChanged: (z) {
-                  if (mounted) setState(() => _zooming = z);
-                },
-                onDeleted: () => Navigator.pop(context),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {},
+                child: _WebInstagramLikeViewerLight(
+                  doc: doc,
+                  isAdmin: _isAdmin,
+                  onClose: () => Navigator.pop(context),
+                  onPrev: _activeIndex > 0 ? _goPrev : null,
+                  onNext: _activeIndex < widget.docs.length - 1 ? _goNext : null,
+                  onZoomingChanged: (z) {
+                    if (mounted) setState(() => _zooming = z);
+                  },
+                  onDeleted: () => Navigator.pop(context),
+                ),
               ),
             ),
           ],
@@ -243,7 +262,6 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
       );
     }
 
-    // ✅ 모바일: 흰색 꽉찬 페이지 + AppBar 뒤로
     return Scaffold(
       backgroundColor: Colors.white,
       appBar: AppBar(
@@ -283,8 +301,6 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
   }
 }
 
-/// ───────────────────────── 웹(인스타그램 스타일, 라이트 톤 고정) ─────────────────────────
-
 class _WebInstagramLikeViewerLight extends StatelessWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
   final bool isAdmin;
@@ -316,6 +332,7 @@ class _WebInstagramLikeViewerLight extends StatelessWidget {
       width: cardW,
       height: cardH,
       child: Stack(
+        clipBehavior: Clip.none,
         children: [
           ClipRRect(
             borderRadius: BorderRadius.circular(10),
@@ -323,7 +340,6 @@ class _WebInstagramLikeViewerLight extends StatelessWidget {
               color: Colors.white,
               child: Row(
                 children: [
-                  // 좌측: 미디어(흰 배경 + contain)
                   Expanded(
                     flex: 7,
                     child: Container(
@@ -333,11 +349,10 @@ class _WebInstagramLikeViewerLight extends StatelessWidget {
                         isAdmin: isAdmin,
                         onZoomingChanged: onZoomingChanged,
                         onDeleted: onDeleted,
-                        isWebInstagram: true, // 미디어만
+                        isWebInstagram: true,
                       ),
                     ),
                   ),
-                  // 우측: 패널(화이트)
                   Expanded(
                     flex: 4,
                     child: Container(
@@ -353,34 +368,46 @@ class _WebInstagramLikeViewerLight extends StatelessWidget {
               ),
             ),
           ),
-
-          // 닫기(X)
           Positioned(
-            top: 10,
-            right: 10,
-            child: IconButton(
-              onPressed: onClose,
-              icon: const Icon(Icons.close, color: Colors.black),
-              splashRadius: 22,
+            top: -6,
+            left: -56,
+            child: Material(
+              color: Colors.white,
+              shape: const CircleBorder(),
+              elevation: 3,
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: onClose,
+                child: const SizedBox(
+                  width: 44,
+                  height: 44,
+                  child: Icon(Icons.close, color: Colors.black, size: 22),
+                ),
+              ),
             ),
           ),
-
           if (onPrev != null)
             Positioned(
-              left: -8,
+              left: -22,
               top: 0,
               bottom: 0,
               child: Center(
-                child: _WebArrowButtonLight(icon: Icons.chevron_left, onTap: onPrev!),
+                child: _WebArrowButtonLight(
+                  icon: Icons.chevron_left,
+                  onTap: onPrev!,
+                ),
               ),
             ),
           if (onNext != null)
             Positioned(
-              right: -8,
+              right: -22,
               top: 0,
               bottom: 0,
               child: Center(
-                child: _WebArrowButtonLight(icon: Icons.chevron_right, onTap: onNext!),
+                child: _WebArrowButtonLight(
+                  icon: Icons.chevron_right,
+                  onTap: onNext!,
+                ),
               ),
             ),
         ],
@@ -392,7 +419,11 @@ class _WebInstagramLikeViewerLight extends StatelessWidget {
 class _WebArrowButtonLight extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
-  const _WebArrowButtonLight({required this.icon, required this.onTap});
+
+  const _WebArrowButtonLight({
+    required this.icon,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -417,6 +448,7 @@ class _WebRightPanelLight extends StatefulWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
   final bool isAdmin;
   final VoidCallback onDeleted;
+
   const _WebRightPanelLight({
     required this.doc,
     required this.isAdmin,
@@ -429,7 +461,6 @@ class _WebRightPanelLight extends StatefulWidget {
 
 class _WebRightPanelLightState extends State<_WebRightPanelLight> {
   late Map<String, dynamic> data;
-
   bool liked = false;
   StreamSubscription? _likeSub;
 
@@ -485,92 +516,82 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
     }
   }
 
-  Future<void> _openMoreMenu() async {
-    if (!widget.isAdmin) return;
+  Future<void> _handleMenuAction(String value) async {
+    if (!mounted) return;
 
-    final selected = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(12)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 44,
-              height: 5,
-              margin: const EdgeInsets.only(top: 10, bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('수정'),
-              onTap: () => Navigator.pop(ctx, 'edit'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.redAccent),
-              title: const Text('삭제', style: TextStyle(color: Colors.redAccent)),
-              onTap: () => Navigator.pop(ctx, 'delete'),
-            ),
-            const SizedBox(height: 8),
-          ],
+    if (value == 'edit') {
+      await _editPost();
+      return;
+    }
+
+    if (value == 'delete') {
+      await _confirmDelete();
+      return;
+    }
+  }
+
+  Future<void> _editPost() async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditPostPage(
+          postId: widget.doc.id,
+          initialData: data,
         ),
       ),
     );
 
-    if (!mounted || selected == null) return;
+    if (updated == true) {
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('posts')
+            .doc(widget.doc.id)
+            .get(const GetOptions(source: Source.server));
 
-    if (selected == 'edit') {
-      final updated = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => EditPostPage(postId: widget.doc.id, initialData: data),
-        ),
-      );
-      if (updated == true) {
-        try {
-          final snap = await FirebaseFirestore.instance
-              .collection('posts')
-              .doc(widget.doc.id)
-              .get(const GetOptions(source: Source.server));
-          if (snap.exists && mounted) {
-            setState(() => data = Map<String, dynamic>.from(snap.data()!));
-          }
-        } catch (_) {}
-      }
-    }
-
-    if (selected == 'delete') {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('삭제'),
-          content: const Text('정말 삭제할까요?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('취소')),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('삭제', style: TextStyle(color: Colors.redAccent)),
-            ),
-          ],
-        ),
-      );
-
-      if (ok == true) {
-        try {
-          await FirebaseFirestore.instance.collection('posts').doc(widget.doc.id).delete();
-          if (!mounted) return;
-          widget.onDeleted();
-        } catch (e) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('삭제 실패: $e')));
+        if (snap.exists && mounted) {
+          setState(() => data = Map<String, dynamic>.from(snap.data()!));
         }
-      }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _confirmDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('삭제 확인'),
+        content: const Text('이 게시물을 정말 삭제할까요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              '삭제',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('posts')
+          .doc(widget.doc.id)
+          .delete();
+
+      if (!mounted) return;
+      widget.onDeleted();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('삭제 실패: $e')),
+      );
     }
   }
 
@@ -578,7 +599,8 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
   Widget build(BuildContext context) {
     final brandKor = (data['brand'] ?? '').toString().trim();
     final brandEng = (data['brandEng'] ?? '').toString().trim();
-    final logoUrl = (data['brandLogoUrl'] ?? data['logoUrl'] ?? '').toString().trim();
+    final logoUrl =
+    (data['brandLogoUrl'] ?? data['logoUrl'] ?? '').toString().trim();
 
     final title = (data['title'] ?? '').toString();
     final code = (data['itemCode'] ?? '').toString();
@@ -586,18 +608,23 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
 
     return Column(
       children: [
-        // 헤더(브랜드 + ⋯)
         Container(
-          padding: const EdgeInsets.fromLTRB(14, 12, 8, 12),
+          padding: const EdgeInsets.fromLTRB(18, 12, 8, 12),
           decoration: BoxDecoration(
-            border: Border(bottom: BorderSide(color: Colors.black.withValues(alpha: 0.10))),
+            border: Border(
+              bottom: BorderSide(
+                color: Colors.black.withValues(alpha: 0.10),
+              ),
+            ),
           ),
           child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               CircleAvatar(
                 radius: 16,
                 backgroundColor: Colors.black.withValues(alpha: 0.06),
-                backgroundImage: logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+                backgroundImage:
+                logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
                 child: logoUrl.isEmpty
                     ? const Icon(Icons.store, color: Colors.black54, size: 16)
                     : null,
@@ -618,18 +645,25 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
                     );
                   },
                   child: Column(
+                    mainAxisSize: MainAxisSize.min,
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
                         brandKor.isEmpty ? 'ALL' : brandKor,
-                        style: const TextStyle(color: Colors.black, fontWeight: FontWeight.w800),
+                        style: const TextStyle(
+                          color: Colors.black,
+                          fontWeight: FontWeight.w800,
+                        ),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
                       if (brandEng.isNotEmpty)
                         Text(
                           brandEng,
-                          style: TextStyle(color: Colors.black.withValues(alpha: 0.55), fontSize: 12),
+                          style: TextStyle(
+                            color: Colors.black.withValues(alpha: 0.55),
+                            fontSize: 12,
+                          ),
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                         ),
@@ -638,58 +672,113 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
                 ),
               ),
               if (widget.isAdmin)
-                IconButton(
-                  onPressed: _openMoreMenu,
-                  icon: const Icon(Icons.more_horiz, color: Colors.black87),
-                  splashRadius: 18,
+                PopupMenuButton<String>(
+                  tooltip: '더보기',
+                  color: Colors.white,
+                  elevation: 8,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  position: PopupMenuPosition.under,
+                  onSelected: _handleMenuAction,
+                  itemBuilder: (context) => const [
+                    PopupMenuItem<String>(
+                      value: 'edit',
+                      child: Text('수정'),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'delete',
+                      child: Text(
+                        '삭제',
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                  ],
+                  child: const Padding(
+                    padding: EdgeInsets.only(left: 8, right: 2),
+                    child: SizedBox(
+                      width: 36,
+                      height: 36,
+                      child: Icon(
+                        Icons.more_horiz,
+                        color: Colors.black87,
+                        size: 20,
+                      ),
+                    ),
+                  ),
                 ),
             ],
           ),
         ),
-
-        // 본문(스크롤)
         Expanded(
           child: SingleChildScrollView(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-            child: DefaultTextStyle(
-              style: const TextStyle(color: Colors.black),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    title.isEmpty ? '(제목 없음)' : title,
-                    style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 16, height: 1.25),
-                  ),
-                  // ✅ 관리자만 품번 표시
-                  if (widget.isAdmin && code.trim().isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      code,
-                      style: TextStyle(
-                        color: Colors.black.withValues(alpha: 0.55),
-                        fontSize: 12,
-                        fontWeight: FontWeight.w700,
+            padding: const EdgeInsets.fromLTRB(22, 14, 18, 12),
+            child: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: double.infinity,
+                child: DefaultTextStyle(
+                  style: const TextStyle(color: Colors.black),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.start,
+                    children: [
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          title.isEmpty ? '(제목 없음)' : title,
+                          textAlign: TextAlign.left,
+                          style: const TextStyle(
+                            fontWeight: FontWeight.w900,
+                            fontSize: 16,
+                            height: 1.25,
+                          ),
+                        ),
                       ),
-                    ),
-                  ],
-                  if (desc.trim().isNotEmpty) ...[
-                    const SizedBox(height: 12),
-                    Text(
-                      desc,
-                      style: TextStyle(color: Colors.black.withValues(alpha: 0.88), height: 1.5),
-                    ),
-                  ],
-                ],
+                      if (widget.isAdmin && code.trim().isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            code,
+                            textAlign: TextAlign.left,
+                            style: TextStyle(
+                              color: Colors.black.withValues(alpha: 0.55),
+                              fontSize: 12,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (desc.trim().isNotEmpty) ...[
+                        const SizedBox(height: 12),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Text(
+                            desc,
+                            textAlign: TextAlign.left,
+                            style: TextStyle(
+                              color: Colors.black.withValues(alpha: 0.88),
+                              height: 1.5,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
           ),
         ),
-
-        // 하단 액션(좋아요)
         Container(
           padding: const EdgeInsets.fromLTRB(10, 10, 10, 10),
           decoration: BoxDecoration(
-            border: Border(top: BorderSide(color: Colors.black.withValues(alpha: 0.10))),
+            border: Border(
+              top: BorderSide(
+                color: Colors.black.withValues(alpha: 0.10),
+              ),
+            ),
           ),
           child: Row(
             children: [
@@ -702,7 +791,10 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
               ),
               Text(
                 '좋아요',
-                style: TextStyle(color: Colors.black.withValues(alpha: 0.90), fontWeight: FontWeight.w700),
+                style: TextStyle(
+                  color: Colors.black.withValues(alpha: 0.90),
+                  fontWeight: FontWeight.w700,
+                ),
               ),
               const Spacer(),
             ],
@@ -712,10 +804,6 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
     );
   }
 }
-
-/// ───────────────────────── 공통 포스트 카드 (모바일/웹좌측) ─────────────────────────
-/// isWebInstagram=true: 미디어만(좌측 큰 화면)
-/// false: 모바일 카드 형태(브랜드/좋아요/본문)
 
 class _PostCard extends StatefulWidget {
   final QueryDocumentSnapshot<Map<String, dynamic>> doc;
@@ -779,7 +867,9 @@ class _PostCardState extends State<_PostCard> {
       }
     } else {
       final one = (m['imageUrl'] ?? '').toString().trim();
-      if (one.isNotEmpty) out.add(_isVideoUrl(one) ? _MediaEntry.video(one) : _MediaEntry.image(one));
+      if (one.isNotEmpty) {
+        out.add(_isVideoUrl(one) ? _MediaEntry.video(one) : _MediaEntry.image(one));
+      }
     }
 
     final vids = m['videos'];
@@ -824,115 +914,104 @@ class _PostCardState extends State<_PostCard> {
     }
   }
 
-  Future<void> _openMoreMenuMobile() async {
-    if (!widget.isAdmin) return;
+  Future<void> _handleMobileMenuAction(String value) async {
+    if (!mounted) return;
 
-    final selected = await showModalBottomSheet<String>(
-      context: context,
-      backgroundColor: Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
-      ),
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 44,
-              height: 5,
-              margin: const EdgeInsets.only(top: 10, bottom: 12),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(999),
-              ),
-            ),
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('수정'),
-              onTap: () => Navigator.pop(ctx, 'edit'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.delete, color: Colors.redAccent),
-              title: const Text('삭제', style: TextStyle(color: Colors.redAccent)),
-              onTap: () => Navigator.pop(ctx, 'delete'),
-            ),
-            const SizedBox(height: 8),
-          ],
+    if (value == 'edit') {
+      await _editMobilePost();
+      return;
+    }
+
+    if (value == 'delete') {
+      await _confirmMobileDelete();
+      return;
+    }
+  }
+
+  Future<void> _editMobilePost() async {
+    final updated = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => EditPostPage(
+          postId: widget.doc.id,
+          initialData: data,
         ),
       ),
     );
 
-    if (!mounted || selected == null) return;
+    if (updated == true) {
+      try {
+        final snap = await FirebaseFirestore.instance
+            .collection('posts')
+            .doc(widget.doc.id)
+            .get(const GetOptions(source: Source.server));
 
-    if (selected == 'edit') {
-      final updated = await Navigator.push<bool>(
-        context,
-        MaterialPageRoute(
-          builder: (_) => EditPostPage(postId: widget.doc.id, initialData: data),
-        ),
-      );
-      if (updated == true) {
-        try {
-          final snap = await FirebaseFirestore.instance
-              .collection('posts')
-              .doc(widget.doc.id)
-              .get(const GetOptions(source: Source.server));
-          if (snap.exists && mounted) {
-            setState(() {
-              data = Map<String, dynamic>.from(snap.data()!);
-              media = _buildMedia(data);
-            });
-          }
-        } catch (_) {}
-      }
-    }
-
-    if (selected == 'delete') {
-      final ok = await showDialog<bool>(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('삭제'),
-          content: const Text('정말 삭제할까요?'),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('취소')),
-            TextButton(
-              onPressed: () => Navigator.pop(ctx, true),
-              child: const Text('삭제', style: TextStyle(color: Colors.redAccent)),
-            ),
-          ],
-        ),
-      );
-
-      if (ok == true) {
-        try {
-          await FirebaseFirestore.instance.collection('posts').doc(widget.doc.id).delete();
-          if (!mounted) return;
-          widget.onDeleted();
-        } catch (e) {
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('삭제 실패: $e')));
+        if (snap.exists && mounted) {
+          setState(() {
+            data = Map<String, dynamic>.from(snap.data()!);
+            media = _buildMedia(data);
+          });
         }
-      }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _confirmMobileDelete() async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('삭제 확인'),
+        content: const Text('이 게시물을 정말 삭제할까요?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('취소'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text(
+              '삭제',
+              style: TextStyle(color: Colors.redAccent),
+            ),
+          ),
+        ],
+      ),
+    );
+
+    if (ok != true) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .collection('posts')
+          .doc(widget.doc.id)
+          .delete();
+
+      if (!mounted) return;
+      widget.onDeleted();
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('삭제 실패: $e')),
+      );
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    // ✅ 웹 인스타 좌측: 미디어만
     if (widget.isWebInstagram) {
       return _MediaCarousel(
         media: media,
         onZoomingChanged: widget.onZoomingChanged,
         contain: true,
-        darkBg: false, // ✅ 흰 톤
+        darkBg: false,
         isMobileFrame: false,
       );
     }
 
-    // ✅ 모바일 카드
     final brandKor = (data['brand'] ?? '').toString().trim();
     final brandEng = (data['brandEng'] ?? '').toString().trim();
-    final logoUrl = (data['brandLogoUrl'] ?? data['logoUrl'] ?? '').toString().trim();
+    final logoUrl =
+    (data['brandLogoUrl'] ?? data['logoUrl'] ?? '').toString().trim();
 
     final title = (data['title'] ?? '').toString();
     final code = (data['itemCode'] ?? '').toString();
@@ -946,10 +1025,9 @@ class _PostCardState extends State<_PostCard> {
           brandEng: brandEng,
           logoUrl: logoUrl,
           showMore: widget.isAdmin,
-          onMore: _openMoreMenuMobile,
+          onMenuSelected: _handleMobileMenuAction,
           isAdmin: widget.isAdmin,
         ),
-        // ✅ 모바일 안보임 버그 해결: AspectRatio 프레임
         _MediaCarousel(
           media: media,
           onZoomingChanged: widget.onZoomingChanged,
@@ -968,7 +1046,10 @@ class _PostCardState extends State<_PostCard> {
                 iconSize: 26,
               ),
               const SizedBox(width: 4),
-              const Text('좋아요', style: TextStyle(fontWeight: FontWeight.w700)),
+              const Text(
+                '좋아요',
+                style: TextStyle(fontWeight: FontWeight.w700),
+              ),
               const Spacer(),
             ],
           ),
@@ -980,9 +1061,12 @@ class _PostCardState extends State<_PostCard> {
             children: [
               Text(
                 title.isEmpty ? '(제목 없음)' : title,
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w900, letterSpacing: -0.3),
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w900,
+                  letterSpacing: -0.3,
+                ),
               ),
-              // ✅ 관리자만 품번 표시
               if (widget.isAdmin && code.trim().isNotEmpty) ...[
                 const SizedBox(height: 6),
                 Text(
@@ -996,7 +1080,10 @@ class _PostCardState extends State<_PostCard> {
               ],
               if (desc.trim().isNotEmpty) ...[
                 const SizedBox(height: 10),
-                Text(desc, style: const TextStyle(fontSize: 14, height: 1.5)),
+                Text(
+                  desc,
+                  style: const TextStyle(fontSize: 14, height: 1.5),
+                ),
               ],
             ],
           ),
@@ -1012,7 +1099,7 @@ class _BrandRowMobile extends StatelessWidget {
   final String brandEng;
   final String logoUrl;
   final bool showMore;
-  final VoidCallback onMore;
+  final ValueChanged<String> onMenuSelected;
   final bool isAdmin;
 
   const _BrandRowMobile({
@@ -1020,7 +1107,7 @@ class _BrandRowMobile extends StatelessWidget {
     required this.brandEng,
     required this.logoUrl,
     required this.showMore,
-    required this.onMore,
+    required this.onMenuSelected,
     required this.isAdmin,
   });
 
@@ -1048,14 +1135,27 @@ class _BrandRowMobile extends StatelessWidget {
               CircleAvatar(
                 radius: 18,
                 backgroundColor: Colors.black.withValues(alpha: 0.06),
-                backgroundImage: logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
-                child: logoUrl.isEmpty ? const Icon(Icons.store, size: 18, color: Colors.black54) : null,
+                backgroundImage:
+                logoUrl.isNotEmpty ? NetworkImage(logoUrl) : null,
+                child: logoUrl.isEmpty
+                    ? const Icon(
+                  Icons.store,
+                  size: 18,
+                  color: Colors.black54,
+                )
+                    : null,
               ),
               const SizedBox(width: 10),
               Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(brandKor, style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15)),
+                  Text(
+                    brandKor,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w900,
+                      fontSize: 15,
+                    ),
+                  ),
                   if (brandEng.trim().isNotEmpty)
                     Text(
                       brandEng.toUpperCase(),
@@ -1070,10 +1170,29 @@ class _BrandRowMobile extends StatelessWidget {
               ),
               const Spacer(),
               if (showMore)
-                IconButton(
-                  onPressed: onMore,
-                  icon: const Icon(Icons.more_horiz),
-                  color: Colors.black87,
+                PopupMenuButton<String>(
+                  tooltip: '더보기',
+                  color: Colors.white,
+                  elevation: 8,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  position: PopupMenuPosition.under,
+                  onSelected: onMenuSelected,
+                  itemBuilder: (context) => const [
+                    PopupMenuItem<String>(
+                      value: 'edit',
+                      child: Text('수정'),
+                    ),
+                    PopupMenuItem<String>(
+                      value: 'delete',
+                      child: Text(
+                        '삭제',
+                        style: TextStyle(color: Colors.redAccent),
+                      ),
+                    ),
+                  ],
+                  icon: const Icon(Icons.more_horiz, color: Colors.black87),
                 ),
             ],
           ),
@@ -1082,8 +1201,6 @@ class _BrandRowMobile extends StatelessWidget {
     );
   }
 }
-
-/// ───────────────────────── 미디어 캐러셀 (모바일 높이 제약) ─────────────────────────
 
 class _MediaCarousel extends StatefulWidget {
   final List<_MediaEntry> media;
@@ -1108,10 +1225,121 @@ class _MediaCarouselState extends State<_MediaCarousel> {
   final PageController _pager = PageController();
   int _idx = 0;
 
+  final Map<int, double> _aspectRatioCache = {};
+
+  @override
+  void initState() {
+    super.initState();
+    _preloadCurrentAspectRatio();
+  }
+
   @override
   void dispose() {
     _pager.dispose();
     super.dispose();
+  }
+
+  void _goPrevPhoto() {
+    if (!_pager.hasClients || _idx <= 0) return;
+    _pager.animateToPage(
+      _idx - 1,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _goNextPhoto() {
+    if (!_pager.hasClients || _idx >= widget.media.length - 1) return;
+    _pager.animateToPage(
+      _idx + 1,
+      duration: const Duration(milliseconds: 220),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  void _preloadCurrentAspectRatio() {
+    if (widget.media.isEmpty) return;
+    _resolveAspectRatio(_idx);
+    if (_idx - 1 >= 0) _resolveAspectRatio(_idx - 1);
+    if (_idx + 1 < widget.media.length) _resolveAspectRatio(_idx + 1);
+  }
+
+  Future<void> _resolveAspectRatio(int index) async {
+    if (_aspectRatioCache.containsKey(index)) return;
+    if (index < 0 || index >= widget.media.length) return;
+
+    final m = widget.media[index];
+
+    try {
+      if (m.kind == _MediaKind.video) {
+        final controller = VideoPlayerController.networkUrl(Uri.parse(m.url));
+        await controller.initialize();
+        final size = controller.value.size;
+        final ratio = (size.width > 0 && size.height > 0)
+            ? size.width / size.height
+            : 1.0;
+        await controller.dispose();
+
+        if (!mounted) return;
+        setState(() {
+          _aspectRatioCache[index] = ratio.clamp(0.4, 3.0);
+        });
+        return;
+      }
+
+      final completer = Completer<ImageInfo>();
+      final stream = m.provider!.resolve(const ImageConfiguration());
+      late final ImageStreamListener listener;
+
+      listener = ImageStreamListener(
+            (ImageInfo info, bool _) {
+          if (!completer.isCompleted) completer.complete(info);
+          stream.removeListener(listener);
+        },
+        onError: (error, stackTrace) {
+          if (!completer.isCompleted) {
+            completer.completeError(error, stackTrace);
+          }
+          stream.removeListener(listener);
+        },
+      );
+
+      stream.addListener(listener);
+
+      final info = await completer.future;
+      final w = info.image.width.toDouble();
+      final h = info.image.height.toDouble();
+      final ratio = (w > 0 && h > 0) ? w / h : 1.0;
+
+      if (!mounted) return;
+      setState(() {
+        _aspectRatioCache[index] = ratio.clamp(0.4, 3.0);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _aspectRatioCache[index] = 1.0;
+      });
+    }
+  }
+
+  double _currentAspectRatio() {
+    return _aspectRatioCache[_idx] ?? 1.0;
+  }
+
+  double _mobileHeight(BuildContext context) {
+    final screenW = MediaQuery.of(context).size.width;
+    final ratio = _currentAspectRatio();
+
+    double width = screenW;
+    width = width.clamp(280.0, 900.0);
+
+    double height = width / ratio;
+
+    final maxHeight = screenW * 1.15;
+    const minHeight = 220.0;
+
+    return height.clamp(minHeight, maxHeight);
   }
 
   @override
@@ -1119,39 +1347,76 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     if (widget.media.isEmpty) {
       return const SizedBox(
         height: 280,
-        child: Center(child: Icon(Icons.broken_image_outlined, size: 44)),
+        child: Center(
+          child: Icon(Icons.broken_image_outlined, size: 44),
+        ),
       );
     }
 
     final fit = widget.contain ? BoxFit.contain : BoxFit.cover;
-    final bg = widget.darkBg ? const Color(0xFF0E0E0E) : const Color(0xFFF6F6F6);
+    final bg =
+    widget.darkBg ? const Color(0xFF0E0E0E) : const Color(0xFFF6F6F6);
 
     final content = Container(
       color: bg,
       child: Stack(
         children: [
-          PageView.builder(
-            controller: _pager,
-            itemCount: widget.media.length,
-            onPageChanged: (i) => setState(() => _idx = i),
-            itemBuilder: (_, i) {
-              final m = widget.media[i];
+          Positioned.fill(
+            child: PageView.builder(
+              controller: _pager,
+              itemCount: widget.media.length,
+              onPageChanged: (i) {
+                setState(() => _idx = i);
+                _preloadCurrentAspectRatio();
+              },
+              itemBuilder: (_, i) {
+                final m = widget.media[i];
 
-              if (m.kind == _MediaKind.video) {
-                return _VideoPlayerView(url: m.url, fitContain: widget.contain);
-              }
+                if (m.kind == _MediaKind.video) {
+                  return _VideoPlayerView(
+                    url: m.url,
+                    fitContain: widget.contain,
+                  );
+                }
 
-              if (kIsWeb) {
-                return WebImage(url: m.url, fit: fit);
-              }
+                if (kIsWeb) {
+                  return WebImage(url: m.url, fit: fit);
+                }
 
-              return _TwoFingerZoomImage(
-                provider: m.provider!,
-                onZoomingChanged: widget.onZoomingChanged,
-                fit: fit,
-              );
-            },
+                return _TwoFingerZoomImage(
+                  provider: m.provider!,
+                  onZoomingChanged: widget.onZoomingChanged,
+                  fit: fit,
+                );
+              },
+            ),
           ),
+          if (kIsWeb && widget.media.length > 1 && _idx > 0)
+            Positioned(
+              left: 12,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: _InnerPhotoArrowButton(
+                  icon: Icons.chevron_left,
+                  onTap: _goPrevPhoto,
+                ),
+              ),
+            ),
+          if (kIsWeb &&
+              widget.media.length > 1 &&
+              _idx < widget.media.length - 1)
+            Positioned(
+              right: 12,
+              top: 0,
+              bottom: 0,
+              child: Center(
+                child: _InnerPhotoArrowButton(
+                  icon: Icons.chevron_right,
+                  onTap: _goNextPhoto,
+                ),
+              ),
+            ),
           if (widget.media.length > 1)
             Positioned(
               bottom: 12,
@@ -1159,7 +1424,10 @@ class _MediaCarouselState extends State<_MediaCarousel> {
               right: 0,
               child: Center(
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: Colors.black.withValues(alpha: 0.25),
                     borderRadius: BorderRadius.circular(999),
@@ -1174,7 +1442,9 @@ class _MediaCarouselState extends State<_MediaCarousel> {
                         width: active ? 14 : 6,
                         height: 6,
                         decoration: BoxDecoration(
-                          color: active ? Colors.white : Colors.white.withValues(alpha: 0.45),
+                          color: active
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.45),
                           borderRadius: BorderRadius.circular(999),
                         ),
                       );
@@ -1188,16 +1458,54 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     );
 
     if (widget.isMobileFrame) {
-      return AspectRatio(aspectRatio: 4 / 5, child: content);
+      return AnimatedContainer(
+        duration: const Duration(milliseconds: 220),
+        curve: Curves.easeOutCubic,
+        height: _mobileHeight(context),
+        child: content,
+      );
     }
+
     return SizedBox.expand(child: content);
+  }
+}
+
+class _InnerPhotoArrowButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _InnerPhotoArrowButton({
+    required this.icon,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.black.withValues(alpha: 0.32),
+      shape: const CircleBorder(),
+      elevation: 1,
+      child: InkWell(
+        customBorder: const CircleBorder(),
+        onTap: onTap,
+        child: SizedBox(
+          width: 38,
+          height: 38,
+          child: Icon(icon, color: Colors.white, size: 24),
+        ),
+      ),
+    );
   }
 }
 
 class _VideoPlayerView extends StatefulWidget {
   final String url;
   final bool fitContain;
-  const _VideoPlayerView({required this.url, required this.fitContain});
+
+  const _VideoPlayerView({
+    required this.url,
+    required this.fitContain,
+  });
 
   @override
   State<_VideoPlayerView> createState() => _VideoPlayerViewState();
@@ -1217,7 +1525,9 @@ class _VideoPlayerViewState extends State<_VideoPlayerView> {
   Future<void> _init() async {
     try {
       await _vc.initialize();
-      _vc..setLooping(true)..setVolume(0.0);
+      _vc
+        ..setLooping(true)
+        ..setVolume(0.0);
       await _vc.play();
       if (!mounted) return;
       setState(() => _ready = true);
@@ -1237,7 +1547,11 @@ class _VideoPlayerViewState extends State<_VideoPlayerView> {
   Widget build(BuildContext context) {
     if (!_ready || !_vc.value.isInitialized) {
       return const Center(
-        child: SizedBox(width: 34, height: 34, child: CircularProgressIndicator(strokeWidth: 2)),
+        child: SizedBox(
+          width: 34,
+          height: 34,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
       );
     }
 
@@ -1279,10 +1593,12 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
   @override
   void initState() {
     super.initState();
-    _ac = AnimationController(vsync: this, duration: const Duration(milliseconds: 180))
-      ..addListener(() {
-        if (_reset != null) _tc.value = _reset!.value;
-      });
+    _ac = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 180),
+    )..addListener(() {
+      if (_reset != null) _tc.value = _reset!.value;
+    });
   }
 
   @override
@@ -1308,9 +1624,9 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
 
   @override
   Widget build(BuildContext context) {
-    // ✅ 로딩/디코딩 시간 단축: 화면 크기에 맞춰 decode 사이즈 제한
     final mq = MediaQuery.of(context);
-    final targetW = (mq.size.width * mq.devicePixelRatio).clamp(600.0, 2400.0).round();
+    final targetW =
+    (mq.size.width * mq.devicePixelRatio).clamp(600.0, 2400.0).round();
     final optimizedProvider = ResizeImage(widget.provider, width: targetW);
 
     return InteractiveViewer(
@@ -1320,13 +1636,10 @@ class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
       panEnabled: true,
       scaleEnabled: true,
       onInteractionStart: (_) => _setZooming(true),
-
-      // ✅ 핵심: 손 떼면 항상 원복
       onInteractionEnd: (_) {
         _setZooming(false);
         _resetBack();
       },
-
       child: RepaintBoundary(
         child: Image(
           image: optimizedProvider,

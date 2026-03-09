@@ -1,9 +1,6 @@
-// lib/pages/home_page.dart ✅ 최종(요청 반영)
-// ✅ 1) 슬라이더 큰 제목: 해당 게시물 title
-// ✅ 2) 로딩 체감 개선
-//   - 최초 로드: 모바일 20 / 웹 40 (빠르게 뜸)
-//   - 추가 로드: 모바일 40 / 웹 80 (스크롤 시 더 가져옴)
-//   - 캐시 먼저 보여주고 서버로 갱신
+// lib/pages/home_page.dart ✅ 최종
+// - 슬라이더 탭 시 전체 _docs를 넘겨서 웹 상세에서 게시물 좌우 이동 가능
+// - 나머지 구조는 기존 유지
 
 import 'dart:async';
 import 'dart:math';
@@ -21,10 +18,10 @@ import '../core/announcement_popup_manager.dart';
 import '../utils/cloudinary_image_utils.dart';
 import '../widgets/post_overlay.dart';
 
-const int _kInitialMobile = 20; // ✅ 최초 로드 줄임
+const int _kInitialMobile = 20;
 const int _kInitialWeb = 40;
 
-const int _kMoreMobile = 40; // ✅ 추가 로드는 넉넉히
+const int _kMoreMobile = 40;
 const int _kMoreWeb = 80;
 
 class HomePage extends StatefulWidget {
@@ -111,7 +108,6 @@ class _HomePageState extends State<HomePage> {
       _last = null;
     });
 
-    // 서버 워밍업
     if (!_forcedServerOnce) {
       _forcedServerOnce = true;
       _baseQuery()
@@ -125,10 +121,8 @@ class _HomePageState extends State<HomePage> {
     if (mounted) setState(() => _loading = false);
   }
 
-  // ✅ 변경: "캐시 먼저" -> "서버로 갱신" + ✅ 최초 로드 수 줄임
   Future<void> _loadInitial() async {
     try {
-      // 1) 캐시에서 먼저 가져와서 즉시 화면에 뿌림
       try {
         final cacheQs = await _baseQuery()
             .limit(_initialPageSize)
@@ -147,7 +141,6 @@ class _HomePageState extends State<HomePage> {
         }
       } catch (_) {}
 
-      // 2) 서버 최신 데이터로 갱신
       final serverQs = await _baseQuery()
           .limit(_initialPageSize)
           .get(const GetOptions(source: Source.serverAndCache));
@@ -171,7 +164,6 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ✅ 변경: 추가 로드는 더 큰 pageSize로
   Future<void> _loadMore() async {
     if (_loading || _loadingMore || !_hasMore) return;
     if (_last == null) return;
@@ -182,7 +174,7 @@ class _HomePageState extends State<HomePage> {
       final qs = await _baseQuery()
           .startAfterDocument(_last!)
           .limit(_morePageSize)
-          .get(); // 기본(serverAndCache)
+          .get();
       final items = qs.docs;
 
       if (!mounted) return;
@@ -354,19 +346,19 @@ class _HomePageState extends State<HomePage> {
       _SlideItem(
         label: titleOf(popular!, '인기 컬렉션'),
         subLabel: '인기 컬렉션 · 지금 가장 핫한 주얼리',
-        imageUrl: pickSliderImage(popular!),
+        imageUrl: pickSliderImage(popular),
         doc: popular,
       ),
       _SlideItem(
         label: titleOf(recent!, '신상 컬렉션'),
         subLabel: '신상 컬렉션 · 방금 올라온 새로운 디자인',
-        imageUrl: pickSliderImage(recent!),
+        imageUrl: pickSliderImage(recent),
         doc: recent,
       ),
       _SlideItem(
         label: titleOf(updated!, '업데이트'),
         subLabel: '업데이트 · 새롭게 단장한 게시물',
-        imageUrl: pickSliderImage(updated!),
+        imageUrl: pickSliderImage(updated),
         doc: updated,
       ),
       _SlideItem(
@@ -426,12 +418,10 @@ class _HomePageState extends State<HomePage> {
             ? FloatingActionButton.extended(
           onPressed: () => setState(() => _isReorderMode = !_isReorderMode),
           elevation: 4,
-          icon: Icon(_isReorderMode ? Icons.check : Icons.swap_vert,
-              size: 20),
+          icon: Icon(_isReorderMode ? Icons.check : Icons.swap_vert, size: 20),
           label: Text(
             _isReorderMode ? '정렬 완료' : '순서 변경',
-            style:
-            const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
+            style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 13),
           ),
           backgroundColor: isDark ? Colors.white : Colors.black,
           foregroundColor: isDark ? Colors.black : Colors.white,
@@ -459,6 +449,7 @@ class _HomePageState extends State<HomePage> {
                       child: Listener(
                         onPointerDown: (_) => _timer?.cancel(),
                         onPointerUp: (_) => _startAuto(),
+                        onPointerCancel: (_) => _startAuto(),
                         child: ScrollConfiguration(
                           behavior: const _DragScrollBehavior(),
                           child: PageView.builder(
@@ -486,58 +477,61 @@ class _HomePageState extends State<HomePage> {
                                       scale: scaleValue,
                                       child: GestureDetector(
                                         onTap: () {
-                                          if (item.doc != null) {
-                                            PostOverlay.show(context,
+                                          if (item.doc != null && _docs.isNotEmpty) {
+                                            final startIndex = _docs.indexWhere(
+                                                  (d) => d.id == item.doc!.id,
+                                            );
+
+                                            if (startIndex >= 0) {
+                                              PostOverlay.show(
+                                                context,
+                                                docs: _docs,
+                                                startIndex: startIndex,
+                                              );
+                                            } else {
+                                              PostOverlay.show(
+                                                context,
                                                 docs: [item.doc!],
-                                                startIndex: 0);
+                                                startIndex: 0,
+                                              );
+                                            }
                                           }
                                         },
                                         child: ConstrainedBox(
                                           constraints:
                                           const BoxConstraints(maxWidth: 800),
                                           child: Container(
-                                            margin: const EdgeInsets.symmetric(
-                                                horizontal: 10),
+                                            margin: const EdgeInsets.symmetric(horizontal: 10),
                                             decoration: BoxDecoration(
-                                              borderRadius:
-                                              BorderRadius.circular(24),
+                                              borderRadius: BorderRadius.circular(24),
                                               boxShadow: [
                                                 BoxShadow(
                                                   color: isDark
                                                       ? Colors.black54
-                                                      : Colors.black
-                                                      .withOpacity(0.15),
+                                                      : Colors.black.withOpacity(0.15),
                                                   blurRadius: 20,
                                                   offset: const Offset(0, 10),
                                                 )
                                               ],
                                             ),
                                             child: ClipRRect(
-                                              borderRadius:
-                                              BorderRadius.circular(24),
+                                              borderRadius: BorderRadius.circular(24),
                                               child: Stack(
                                                 fit: StackFit.expand,
                                                 children: [
                                                   if (item.imageUrl.isNotEmpty)
                                                     Transform.translate(
                                                       offset: Offset(
-                                                          pageOffset * width * 0.2,
-                                                          0),
+                                                          pageOffset * width * 0.2, 0),
                                                       child: CachedNetworkImage(
                                                         imageUrl: item.imageUrl,
                                                         fit: BoxFit.cover,
                                                         fadeInDuration:
-                                                        const Duration(
-                                                            milliseconds: 150),
+                                                        const Duration(milliseconds: 150),
                                                         placeholder: (_, __) =>
-                                                            ColoredBox(
-                                                                color:
-                                                                skeletonColor),
-                                                        errorWidget:
-                                                            (_, __, ___) =>
-                                                            ColoredBox(
-                                                                color:
-                                                                errorBgColor),
+                                                            ColoredBox(color: skeletonColor),
+                                                        errorWidget: (_, __, ___) =>
+                                                            ColoredBox(color: errorBgColor),
                                                       ),
                                                     )
                                                   else
@@ -547,41 +541,33 @@ class _HomePageState extends State<HomePage> {
                                                     right: 16,
                                                     bottom: 20,
                                                     child: ClipRRect(
-                                                      borderRadius:
-                                                      BorderRadius.circular(16),
+                                                      borderRadius: BorderRadius.circular(16),
                                                       child: BackdropFilter(
                                                         filter: ImageFilter.blur(
                                                             sigmaX: 12, sigmaY: 12),
                                                         child: Container(
-                                                          padding:
-                                                          const EdgeInsets.symmetric(
-                                                              horizontal: 20,
-                                                              vertical: 16),
+                                                          padding: const EdgeInsets.symmetric(
+                                                              horizontal: 20, vertical: 16),
                                                           decoration: BoxDecoration(
                                                             color: isDark
-                                                                ? Colors.black
-                                                                .withOpacity(0.3)
-                                                                : Colors.white
-                                                                .withOpacity(0.2),
+                                                                ? Colors.black.withOpacity(0.3)
+                                                                : Colors.white.withOpacity(0.2),
                                                             border: Border.all(
-                                                              color: Colors.white
-                                                                  .withOpacity(0.3),
+                                                              color: Colors.white.withOpacity(0.3),
                                                               width: 0.5,
                                                             ),
                                                           ),
                                                           child: Column(
                                                             crossAxisAlignment:
                                                             CrossAxisAlignment.start,
-                                                            mainAxisSize:
-                                                            MainAxisSize.min,
+                                                            mainAxisSize: MainAxisSize.min,
                                                             children: [
                                                               Row(
                                                                 children: [
                                                                   Container(
                                                                     width: 6,
                                                                     height: 6,
-                                                                    decoration:
-                                                                    BoxDecoration(
+                                                                    decoration: BoxDecoration(
                                                                       color: isDark
                                                                           ? Colors.white
                                                                           : Colors.black,
@@ -675,7 +661,6 @@ class _HomePageState extends State<HomePage> {
             final bool showMasonry = !widget.isAdmin || !_isReorderMode;
 
             if (_loading && _docs.isEmpty) {
-              // ✅ 스켈레톤도 초기 로드 축소 느낌으로 조금만
               gridSliver = SliverPadding(
                 padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
                 sliver: SliverMasonryGrid.count(
@@ -754,8 +739,8 @@ class _HomePageState extends State<HomePage> {
                         index: i,
                         key: ValueKey(d.id),
                         child: _FadedTile(
-                          onTap: () => PostOverlay.show(context,
-                              docs: list, startIndex: i),
+                          onTap: () =>
+                              PostOverlay.show(context, docs: list, startIndex: i),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(12),
                             child: CachedNetworkImage(
@@ -795,8 +780,8 @@ class _HomePageState extends State<HomePage> {
                         180.0 + Random(docId.hashCode).nextInt(160);
 
                     return _FadedTile(
-                      onTap: () => PostOverlay.show(context,
-                          docs: _docs, startIndex: i),
+                      onTap: () =>
+                          PostOverlay.show(context, docs: _docs, startIndex: i),
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
@@ -806,8 +791,7 @@ class _HomePageState extends State<HomePage> {
                               borderRadius: BorderRadius.circular(16),
                               boxShadow: [
                                 BoxShadow(
-                                  color:
-                                  isDark ? Colors.black45 : Colors.black12,
+                                  color: isDark ? Colors.black45 : Colors.black12,
                                   blurRadius: 8,
                                   offset: const Offset(0, 4),
                                 )
@@ -950,6 +934,7 @@ class _FadedTileState extends State<_FadedTile> {
 
 class _DragScrollBehavior extends MaterialScrollBehavior {
   const _DragScrollBehavior();
+
   @override
   Set<PointerDeviceKind> get dragDevices => {
     PointerDeviceKind.touch,
