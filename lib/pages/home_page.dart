@@ -1,6 +1,9 @@
-// lib/pages/home_page.dart ✅ 최종
-// - 슬라이더 탭 시 전체 _docs를 넘겨서 웹 상세에서 게시물 좌우 이동 가능
-// - 나머지 구조는 기존 유지
+// lib/pages/home_page.dart ✅ 최신 코드
+// - 게시물 순서: 최신순 유지
+// - 수정한 게시물은 sortKey 기준으로 최상단
+// - 랜덤으로 바뀌는 건 게시물 "모양(높이)"만
+// - 새로고침/재진입 시 높이만 다시 랜덤 배정
+// - 상세 오버레이는 기존 그대로 사용
 
 import 'dart:async';
 import 'dart:math';
@@ -11,8 +14,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:reorderable_grid_view/reorderable_grid_view.dart';
 import 'package:flutter_staggered_grid_view/flutter_staggered_grid_view.dart';
+import 'package:reorderable_grid_view/reorderable_grid_view.dart';
 
 import '../core/announcement_popup_manager.dart';
 import '../utils/cloudinary_image_utils.dart';
@@ -57,6 +60,9 @@ class _HomePageState extends State<HomePage> {
   bool _loadingMore = false;
 
   final ValueNotifier<int> _currentPageNotifier = ValueNotifier<int>(0);
+
+  // ✅ 새로고침/재진입 시 카드 높이만 다시 랜덤
+  final Map<String, double> _liveTileHeights = {};
 
   int get _initialPageSize => kIsWeb ? _kInitialWeb : _kInitialMobile;
   int get _morePageSize => kIsWeb ? _kMoreWeb : _kMoreMobile;
@@ -106,6 +112,7 @@ class _HomePageState extends State<HomePage> {
       _docs.clear();
       _adminDocs.clear();
       _last = null;
+      _liveTileHeights.clear(); // ✅ 모양만 다시 랜덤
     });
 
     if (!_forcedServerOnce) {
@@ -399,6 +406,17 @@ class _HomePageState extends State<HomePage> {
         }
       }
     });
+  }
+
+  // ✅ 순서는 안 바꾸고, 카드 높이만 랜덤
+  double _heightForDoc(String docId) {
+    if (_liveTileHeights.containsKey(docId)) {
+      return _liveTileHeights[docId]!;
+    }
+
+    final value = 180.0 + Random().nextInt(180);
+    _liveTileHeights[docId] = value;
+    return value;
   }
 
   @override
@@ -776,8 +794,7 @@ class _HomePageState extends State<HomePage> {
                         : buildThumbUrl(raw);
 
                     final title = (data['title'] ?? '').toString();
-                    final randomHeight =
-                        180.0 + Random(docId.hashCode).nextInt(160);
+                    final randomHeight = _heightForDoc(docId);
 
                     return _FadedTile(
                       onTap: () =>

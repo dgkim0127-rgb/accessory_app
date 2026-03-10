@@ -4,8 +4,8 @@
 // - 점 3개 누르면 그 자리에서 수정/삭제 메뉴 표시
 // - 삭제는 한 번 더 확인
 // - 웹/모바일 공통 적용
-// - 모바일 게시물 사진은 4:5 고정이 아니라 원본 비율 기준으로 표시
-// - 너무 과하게 커지거나 작아지지 않도록 높이 제한 적용
+// - 모바일 게시물 사진은 원본 비율 기준으로 표시
+// - 모바일에서 사진은 좌우 꽉 차게 표시
 
 import 'dart:async';
 
@@ -1354,115 +1354,116 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     }
 
     final fit = widget.contain ? BoxFit.contain : BoxFit.cover;
-    final bg =
-    widget.darkBg ? const Color(0xFF0E0E0E) : const Color(0xFFF6F6F6);
 
-    final content = Container(
-      color: bg,
-      child: Stack(
-        children: [
-          Positioned.fill(
-            child: PageView.builder(
-              controller: _pager,
-              itemCount: widget.media.length,
-              onPageChanged: (i) {
-                setState(() => _idx = i);
-                _preloadCurrentAspectRatio();
-              },
-              itemBuilder: (_, i) {
-                final m = widget.media[i];
+    final content = Stack(
+      children: [
+        Positioned.fill(
+          child: PageView.builder(
+            controller: _pager,
+            itemCount: widget.media.length,
+            onPageChanged: (i) {
+              setState(() => _idx = i);
+              _preloadCurrentAspectRatio();
+            },
+            itemBuilder: (_, i) {
+              final m = widget.media[i];
 
-                if (m.kind == _MediaKind.video) {
-                  return _VideoPlayerView(
-                    url: m.url,
-                    fitContain: widget.contain,
-                  );
-                }
-
-                if (kIsWeb) {
-                  return WebImage(url: m.url, fit: fit);
-                }
-
-                return _TwoFingerZoomImage(
-                  provider: m.provider!,
-                  onZoomingChanged: widget.onZoomingChanged,
-                  fit: fit,
+              if (m.kind == _MediaKind.video) {
+                return _VideoPlayerView(
+                  url: m.url,
+                  fitContain: widget.contain,
                 );
-              },
+              }
+
+              if (kIsWeb) {
+                return WebImage(url: m.url, fit: fit);
+              }
+
+              return _TwoFingerZoomImage(
+                provider: m.provider!,
+                onZoomingChanged: widget.onZoomingChanged,
+                fit: fit,
+              );
+            },
+          ),
+        ),
+        if (kIsWeb && widget.media.length > 1 && _idx > 0)
+          Positioned(
+            left: 12,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: _InnerPhotoArrowButton(
+                icon: Icons.chevron_left,
+                onTap: _goPrevPhoto,
+              ),
             ),
           ),
-          if (kIsWeb && widget.media.length > 1 && _idx > 0)
-            Positioned(
-              left: 12,
-              top: 0,
-              bottom: 0,
-              child: Center(
-                child: _InnerPhotoArrowButton(
-                  icon: Icons.chevron_left,
-                  onTap: _goPrevPhoto,
+        if (kIsWeb &&
+            widget.media.length > 1 &&
+            _idx < widget.media.length - 1)
+          Positioned(
+            right: 12,
+            top: 0,
+            bottom: 0,
+            child: Center(
+              child: _InnerPhotoArrowButton(
+                icon: Icons.chevron_right,
+                onTap: _goNextPhoto,
+              ),
+            ),
+          ),
+        if (widget.media.length > 1)
+          Positioned(
+            bottom: 12,
+            left: 0,
+            right: 0,
+            child: Center(
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 10,
+                  vertical: 6,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: List.generate(widget.media.length, (i) {
+                    final active = i == _idx;
+                    return AnimatedContainer(
+                      duration: const Duration(milliseconds: 180),
+                      margin: const EdgeInsets.symmetric(horizontal: 3),
+                      width: active ? 14 : 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: active
+                            ? Colors.white
+                            : Colors.white.withValues(alpha: 0.45),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                    );
+                  }),
                 ),
               ),
             ),
-          if (kIsWeb &&
-              widget.media.length > 1 &&
-              _idx < widget.media.length - 1)
-            Positioned(
-              right: 12,
-              top: 0,
-              bottom: 0,
-              child: Center(
-                child: _InnerPhotoArrowButton(
-                  icon: Icons.chevron_right,
-                  onTap: _goNextPhoto,
-                ),
-              ),
-            ),
-          if (widget.media.length > 1)
-            Positioned(
-              bottom: 12,
-              left: 0,
-              right: 0,
-              child: Center(
-                child: Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 6,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.black.withValues(alpha: 0.25),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: List.generate(widget.media.length, (i) {
-                      final active = i == _idx;
-                      return AnimatedContainer(
-                        duration: const Duration(milliseconds: 180),
-                        margin: const EdgeInsets.symmetric(horizontal: 3),
-                        width: active ? 14 : 6,
-                        height: 6,
-                        decoration: BoxDecoration(
-                          color: active
-                              ? Colors.white
-                              : Colors.white.withValues(alpha: 0.45),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                      );
-                    }),
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
+          ),
+      ],
     );
 
     if (widget.isMobileFrame) {
+      final h = _mobileHeight(context);
       return AnimatedContainer(
         duration: const Duration(milliseconds: 220),
         curve: Curves.easeOutCubic,
-        height: _mobileHeight(context),
-        child: content,
+        width: double.infinity,
+        height: h,
+        child: SizedBox(
+          width: double.infinity,
+          height: h,
+          child: content,
+        ),
       );
     }
 
