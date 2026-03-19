@@ -1,11 +1,13 @@
 // lib/widgets/post_overlay.dart ✅ 최종
-// - 웹 상세에서 바깥 큰 화살표 = 게시물 이동
-// - 게시물 안 작은 화살표 = 사진 이동
-// - 점 3개 누르면 그 자리에서 수정/삭제 메뉴 표시
-// - 삭제는 한 번 더 확인
-// - 웹/모바일 공통 적용
-// - 모바일 게시물 사진은 원본 비율 기준으로 표시
-// - 모바일에서 사진은 좌우 꽉 차게 표시
+// - 디자인은 기존 코드 유지
+// - 모바일 게시물 넘김은 세로 한 장씩
+// - 게시물 안에서 바로 핀치 줌
+// - 더블탭 없음
+// - 손을 떼면 원본으로 자동 복귀
+// - 확대 시 게시물 틀 밖으로도 보이게 처리
+// - 줌 중에는 부모/자식 PageView 스크롤 충돌 방지
+// - 빈 공간(허공)에서도 두 손가락 줌 가능
+// - 인스타처럼 이미지가 화면 위로 떠서 확대되는 느낌
 
 import 'dart:async';
 
@@ -14,7 +16,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 import 'package:video_player/video_player.dart';
 
 import '../pages/brand_profile_page.dart';
@@ -140,8 +141,7 @@ class _PostOverlayBody extends StatefulWidget {
 }
 
 class _PostOverlayBodyState extends State<_PostOverlayBody> {
-  final ItemScrollController _scrollCtrl = ItemScrollController();
-  final ItemPositionsListener _posListener = ItemPositionsListener.create();
+  late final PageController _pageController;
 
   bool _zooming = false;
   int _activeIndex = 0;
@@ -152,13 +152,13 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
     super.initState();
     _activeIndex =
         widget.initialIndex.clamp(0, (widget.docs.length - 1).clamp(0, 1 << 30));
-    _posListener.itemPositions.addListener(_onPositions);
+    _pageController = PageController(initialPage: _activeIndex);
     _checkAdmin();
   }
 
   @override
   void dispose() {
-    _posListener.itemPositions.removeListener(_onPositions);
+    _pageController.dispose();
     super.dispose();
   }
 
@@ -170,30 +170,10 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
       final snap =
       await FirebaseFirestore.instance.collection('users').doc(u.uid).get();
       final role = (snap.data()?['role'] ?? 'user').toString().toLowerCase();
+
       if (!mounted) return;
       setState(() => _isAdmin = role == 'admin' || role == 'super');
     } catch (_) {}
-  }
-
-  void _onPositions() {
-    final positions = _posListener.itemPositions.value;
-    if (positions.isEmpty) return;
-
-    int best = _activeIndex;
-    double bestScore = double.infinity;
-
-    for (final p in positions) {
-      final center = (p.itemLeadingEdge + p.itemTrailingEdge) / 2.0;
-      final score = (center - 0.5).abs();
-      if (score < bestScore) {
-        bestScore = score;
-        best = p.index;
-      }
-    }
-
-    if (best != _activeIndex && mounted) {
-      setState(() => _activeIndex = best);
-    }
   }
 
   void _goTo(int idx) {
@@ -209,13 +189,12 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
       return;
     }
 
-    if (!_scrollCtrl.isAttached) return;
+    if (!_pageController.hasClients) return;
 
-    _scrollCtrl.scrollTo(
-      index: target,
+    _pageController.animateToPage(
+      target,
       duration: const Duration(milliseconds: 240),
       curve: Curves.easeOutCubic,
-      alignment: 0.08,
     );
   }
 
@@ -233,6 +212,7 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
       return Scaffold(
         backgroundColor: Colors.transparent,
         body: Stack(
+          clipBehavior: Clip.none,
           children: [
             Positioned.fill(
               child: GestureDetector(
@@ -273,18 +253,17 @@ class _PostOverlayBodyState extends State<_PostOverlayBody> {
           onPressed: () => Navigator.pop(context),
         ),
       ),
-      body: ScrollablePositionedList.builder(
-        itemScrollController: _scrollCtrl,
-        itemPositionsListener: _posListener,
-        initialScrollIndex: widget.initialIndex.clamp(
-          0,
-          (widget.docs.length - 1).clamp(0, 1 << 30),
-        ),
-        initialAlignment: 0.08,
+      body: PageView.builder(
+        controller: _pageController,
+        scrollDirection: Axis.vertical,
         physics: _zooming
             ? const NeverScrollableScrollPhysics()
-            : const BouncingScrollPhysics(),
+            : const PageScrollPhysics(),
         itemCount: widget.docs.length,
+        onPageChanged: (idx) {
+          if (!mounted) return;
+          setState(() => _activeIndex = idx);
+        },
         itemBuilder: (_, idx) {
           return _PostCard(
             doc: widget.docs[idx],
@@ -721,7 +700,6 @@ class _WebRightPanelLightState extends State<_WebRightPanelLight> {
                   style: const TextStyle(color: Colors.black),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisAlignment: MainAxisAlignment.start,
                     children: [
                       Align(
                         alignment: Alignment.centerLeft,
@@ -868,7 +846,9 @@ class _PostCardState extends State<_PostCard> {
     } else {
       final one = (m['imageUrl'] ?? '').toString().trim();
       if (one.isNotEmpty) {
-        out.add(_isVideoUrl(one) ? _MediaEntry.video(one) : _MediaEntry.image(one));
+        out.add(
+          _isVideoUrl(one) ? _MediaEntry.video(one) : _MediaEntry.image(one),
+        );
       }
     }
 
@@ -1224,6 +1204,7 @@ class _MediaCarousel extends StatefulWidget {
 class _MediaCarouselState extends State<_MediaCarousel> {
   final PageController _pager = PageController();
   int _idx = 0;
+  bool _childZooming = false;
 
   final Map<int, double> _aspectRatioCache = {};
 
@@ -1239,7 +1220,14 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     super.dispose();
   }
 
+  void _setChildZooming(bool value) {
+    if (_childZooming == value) return;
+    setState(() => _childZooming = value);
+    widget.onZoomingChanged(value);
+  }
+
   void _goPrevPhoto() {
+    if (_childZooming) return;
     if (!_pager.hasClients || _idx <= 0) return;
     _pager.animateToPage(
       _idx - 1,
@@ -1249,6 +1237,7 @@ class _MediaCarouselState extends State<_MediaCarousel> {
   }
 
   void _goNextPhoto() {
+    if (_childZooming) return;
     if (!_pager.hasClients || _idx >= widget.media.length - 1) return;
     _pager.animateToPage(
       _idx + 1,
@@ -1275,9 +1264,8 @@ class _MediaCarouselState extends State<_MediaCarousel> {
         final controller = VideoPlayerController.networkUrl(Uri.parse(m.url));
         await controller.initialize();
         final size = controller.value.size;
-        final ratio = (size.width > 0 && size.height > 0)
-            ? size.width / size.height
-            : 1.0;
+        final ratio =
+        (size.width > 0 && size.height > 0) ? size.width / size.height : 1.0;
         await controller.dispose();
 
         if (!mounted) return;
@@ -1323,9 +1311,7 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     }
   }
 
-  double _currentAspectRatio() {
-    return _aspectRatioCache[_idx] ?? 1.0;
-  }
+  double _currentAspectRatio() => _aspectRatioCache[_idx] ?? 1.0;
 
   double _mobileHeight(BuildContext context) {
     final screenW = MediaQuery.of(context).size.width;
@@ -1356,10 +1342,14 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     final fit = widget.contain ? BoxFit.contain : BoxFit.cover;
 
     final content = Stack(
+      clipBehavior: Clip.none,
       children: [
         Positioned.fill(
           child: PageView.builder(
             controller: _pager,
+            physics: _childZooming
+                ? const NeverScrollableScrollPhysics()
+                : const PageScrollPhysics(),
             itemCount: widget.media.length,
             onPageChanged: (i) {
               setState(() => _idx = i);
@@ -1379,10 +1369,10 @@ class _MediaCarouselState extends State<_MediaCarousel> {
                 return WebImage(url: m.url, fit: fit);
               }
 
-              return _TwoFingerZoomImage(
+              return _InlineZoomableMediaImage(
                 provider: m.provider!,
-                onZoomingChanged: widget.onZoomingChanged,
                 fit: fit,
+                onZoomingChanged: _setChildZooming,
               );
             },
           ),
@@ -1413,38 +1403,40 @@ class _MediaCarouselState extends State<_MediaCarousel> {
               ),
             ),
           ),
-        if (widget.media.length > 1)
+        if (widget.media.length > 1 && !_childZooming)
           Positioned(
             bottom: 12,
             left: 0,
             right: 0,
             child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 6,
-                ),
-                decoration: BoxDecoration(
-                  color: Colors.black.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: List.generate(widget.media.length, (i) {
-                    final active = i == _idx;
-                    return AnimatedContainer(
-                      duration: const Duration(milliseconds: 180),
-                      margin: const EdgeInsets.symmetric(horizontal: 3),
-                      width: active ? 14 : 6,
-                      height: 6,
-                      decoration: BoxDecoration(
-                        color: active
-                            ? Colors.white
-                            : Colors.white.withValues(alpha: 0.45),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                    );
-                  }),
+              child: IgnorePointer(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.25),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: List.generate(widget.media.length, (i) {
+                      final active = i == _idx;
+                      return AnimatedContainer(
+                        duration: const Duration(milliseconds: 180),
+                        margin: const EdgeInsets.symmetric(horizontal: 3),
+                        width: active ? 14 : 6,
+                        height: 6,
+                        decoration: BoxDecoration(
+                          color: active
+                              ? Colors.white
+                              : Colors.white.withValues(alpha: 0.45),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                      );
+                    }),
+                  ),
                 ),
               ),
             ),
@@ -1459,6 +1451,7 @@ class _MediaCarouselState extends State<_MediaCarousel> {
         curve: Curves.easeOutCubic,
         width: double.infinity,
         height: h,
+        clipBehavior: Clip.none,
         child: SizedBox(
           width: double.infinity,
           height: h,
@@ -1468,6 +1461,205 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     }
 
     return SizedBox.expand(child: content);
+  }
+}
+
+class _InlineZoomableMediaImage extends StatefulWidget {
+  final ImageProvider provider;
+  final BoxFit fit;
+  final ValueChanged<bool> onZoomingChanged;
+
+  const _InlineZoomableMediaImage({
+    required this.provider,
+    required this.fit,
+    required this.onZoomingChanged,
+  });
+
+  @override
+  State<_InlineZoomableMediaImage> createState() =>
+      _InlineZoomableMediaImageState();
+}
+
+class _InlineZoomableMediaImageState extends State<_InlineZoomableMediaImage>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _resetController;
+
+  Animation<double>? _scaleAnim;
+  Animation<Offset>? _offsetAnim;
+
+  double _scale = 1.0;
+  Offset _offset = Offset.zero;
+
+  double _gestureStartScale = 1.0;
+  Offset _gestureStartOffset = Offset.zero;
+  Offset _sceneFocalPoint = Offset.zero;
+
+  bool _zooming = false;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _resetController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 170),
+    )..addListener(() {
+      if (!mounted) return;
+      setState(() {
+        _scale = _scaleAnim?.value ?? 1.0;
+        _offset = _offsetAnim?.value ?? Offset.zero;
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _resetController.dispose();
+    super.dispose();
+  }
+
+  void _setZooming(bool value) {
+    if (_zooming == value) return;
+    _zooming = value;
+    widget.onZoomingChanged(value);
+  }
+
+  void _animateReset() {
+    _scaleAnim = Tween<double>(
+      begin: _scale,
+      end: 1.0,
+    ).animate(
+      CurvedAnimation(
+        parent: _resetController,
+        curve: Curves.easeOutCubic,
+      ),
+    );
+
+    _offsetAnim = Tween<Offset>(
+      begin: _offset,
+      end: Offset.zero,
+    ).animate(
+      CurvedAnimation(
+        parent: _resetController,
+        curve: Curves.easeOutCubic,
+      ),
+    );
+
+    _resetController
+      ..stop()
+      ..reset()
+      ..forward();
+
+    _setZooming(false);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final mq = MediaQuery.of(context);
+    final targetW =
+    (mq.size.width * mq.devicePixelRatio).clamp(800.0, 2600.0).round();
+    final optimizedProvider = ResizeImage(widget.provider, width: targetW);
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final height = constraints.maxHeight;
+
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onScaleStart: (details) {
+            _resetController.stop();
+
+            _gestureStartScale = _scale;
+            _gestureStartOffset = _offset;
+
+            final localFocal = details.localFocalPoint;
+
+            _sceneFocalPoint = Offset(
+              (localFocal.dx - _gestureStartOffset.dx) / _gestureStartScale,
+              (localFocal.dy - _gestureStartOffset.dy) / _gestureStartScale,
+            );
+          },
+          onScaleUpdate: (details) {
+            double nextScale =
+            (_gestureStartScale * details.scale).clamp(1.0, 4.0);
+
+            final localFocal = details.localFocalPoint;
+
+            Offset nextOffset = Offset(
+              localFocal.dx - (_sceneFocalPoint.dx * nextScale),
+              localFocal.dy - (_sceneFocalPoint.dy * nextScale),
+            );
+
+            if (nextScale <= 1.001) {
+              nextScale = 1.0;
+              nextOffset = Offset.zero;
+            }
+
+            setState(() {
+              _scale = nextScale;
+              _offset = nextOffset;
+            });
+
+            _setZooming(nextScale > 1.01);
+          },
+          onScaleEnd: (_) {
+            _animateReset();
+          },
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              SizedBox(
+                width: width,
+                height: height,
+                child: Image(
+                  image: optimizedProvider,
+                  fit: widget.fit,
+                  filterQuality: FilterQuality.high,
+                  gaplessPlayback: true,
+                  width: double.infinity,
+                  height: double.infinity,
+                ),
+              ),
+              if (_scale > 1.001)
+                Positioned.fill(
+                  child: IgnorePointer(
+                    child: OverflowBox(
+                      minWidth: width,
+                      minHeight: height,
+                      maxWidth: double.infinity,
+                      maxHeight: double.infinity,
+                      alignment: Alignment.topLeft,
+                      child: Transform(
+                        alignment: Alignment.topLeft,
+                        transform: Matrix4.identity()
+                          ..translate(_offset.dx, _offset.dy)
+                          ..scale(_scale, _scale),
+                        child: SizedBox(
+                          width: width,
+                          height: height,
+                          child: Material(
+                            color: Colors.transparent,
+                            elevation: 0,
+                            child: Image(
+                              image: optimizedProvider,
+                              fit: widget.fit,
+                              filterQuality: FilterQuality.high,
+                              gaplessPlayback: true,
+                              width: double.infinity,
+                              height: double.infinity,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
   }
 }
 
@@ -1565,90 +1757,5 @@ class _VideoPlayerViewState extends State<_VideoPlayerView> {
     return widget.fitContain
         ? FittedBox(fit: BoxFit.contain, child: child)
         : FittedBox(fit: BoxFit.cover, child: child);
-  }
-}
-
-class _TwoFingerZoomImage extends StatefulWidget {
-  final ImageProvider provider;
-  final ValueChanged<bool> onZoomingChanged;
-  final BoxFit fit;
-
-  const _TwoFingerZoomImage({
-    required this.provider,
-    required this.onZoomingChanged,
-    required this.fit,
-  });
-
-  @override
-  State<_TwoFingerZoomImage> createState() => _TwoFingerZoomImageState();
-}
-
-class _TwoFingerZoomImageState extends State<_TwoFingerZoomImage>
-    with SingleTickerProviderStateMixin {
-  final TransformationController _tc = TransformationController();
-  late final AnimationController _ac;
-
-  Animation<Matrix4>? _reset;
-  bool _zooming = false;
-
-  @override
-  void initState() {
-    super.initState();
-    _ac = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 180),
-    )..addListener(() {
-      if (_reset != null) _tc.value = _reset!.value;
-    });
-  }
-
-  @override
-  void dispose() {
-    _ac.dispose();
-    _tc.dispose();
-    super.dispose();
-  }
-
-  void _setZooming(bool z) {
-    if (_zooming == z) return;
-    _zooming = z;
-    widget.onZoomingChanged(z);
-  }
-
-  void _resetBack() {
-    _ac.stop();
-    _reset = Matrix4Tween(begin: _tc.value, end: Matrix4.identity())
-        .chain(CurveTween(curve: Curves.easeOutCubic))
-        .animate(_ac);
-    _ac.forward(from: 0);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final mq = MediaQuery.of(context);
-    final targetW =
-    (mq.size.width * mq.devicePixelRatio).clamp(600.0, 2400.0).round();
-    final optimizedProvider = ResizeImage(widget.provider, width: targetW);
-
-    return InteractiveViewer(
-      transformationController: _tc,
-      minScale: 1.0,
-      maxScale: 4.0,
-      panEnabled: true,
-      scaleEnabled: true,
-      onInteractionStart: (_) => _setZooming(true),
-      onInteractionEnd: (_) {
-        _setZooming(false);
-        _resetBack();
-      },
-      child: RepaintBoundary(
-        child: Image(
-          image: optimizedProvider,
-          fit: widget.fit,
-          filterQuality: FilterQuality.low,
-          gaplessPlayback: true,
-        ),
-      ),
-    );
   }
 }

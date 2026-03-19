@@ -1,7 +1,7 @@
 {
-  "name": "accessory_app",
+  "name": "Catalog",
   "version": "1.0.0",
-  "description": "Accessory App",
+  "description": "Catalog",
   "main": "index.js",
   "directories": {
     "lib": "lib",
