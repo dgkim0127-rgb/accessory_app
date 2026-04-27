@@ -3,11 +3,17 @@
 // - 모바일 게시물 넘김은 세로 한 장씩
 // - 게시물 안에서 바로 핀치 줌
 // - 더블탭 없음
+// - 두 손가락 닿는 순간 바로 줌 가능
 // - 손을 떼면 원본으로 자동 복귀
 // - 확대 시 게시물 틀 밖으로도 보이게 처리
 // - 줌 중에는 부모/자식 PageView 스크롤 충돌 방지
 // - 빈 공간(허공)에서도 두 손가락 줌 가능
-// - 인스타처럼 이미지가 화면 위로 떠서 확대되는 느낌
+// - PhotoView 제거
+// - InteractiveViewer 제거
+// - ✅ 손가락 기준 위치에서 확대
+// - ✅ 우측 하단으로 쏠리는 현상 보정
+// - ✅ 게시물 틀 밖으로 자연스럽게 확대 (PostCard 최상단 오버레이 레이어)
+// - ✅ 확대 시작 시 사진이 살짝 아래로 내려가는 현상 보정
 
 import 'dart:async';
 
@@ -80,6 +86,20 @@ class _MediaEntry {
     final u = _optimizeCloudinaryVideoUrl(url);
     return _MediaEntry._(_MediaKind.video, u, null);
   }
+}
+
+class _ZoomOverlayData {
+  final ImageProvider provider;
+  final BoxFit fit;
+  final double scale;
+  final Offset offset;
+
+  const _ZoomOverlayData({
+    required this.provider,
+    required this.fit,
+    required this.scale,
+    required this.offset,
+  });
 }
 
 class PostOverlay extends StatelessWidget {
@@ -809,6 +829,9 @@ class _PostCardState extends State<_PostCard> {
   bool liked = false;
   StreamSubscription? _likeSub;
 
+  _ZoomOverlayData? _overlayData;
+  final GlobalKey _mediaAreaKey = GlobalKey();
+
   @override
   void initState() {
     super.initState();
@@ -824,6 +847,7 @@ class _PostCardState extends State<_PostCard> {
       data = Map<String, dynamic>.from(widget.doc.data());
       media = _buildMedia(data);
       _watchLike();
+      _overlayData = null;
     }
   }
 
@@ -976,12 +1000,20 @@ class _PostCardState extends State<_PostCard> {
     }
   }
 
+  void _handleOverlayChanged(_ZoomOverlayData? data) {
+    if (!mounted) return;
+    setState(() {
+      _overlayData = data;
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     if (widget.isWebInstagram) {
       return _MediaCarousel(
         media: media,
         onZoomingChanged: widget.onZoomingChanged,
+        onOverlayChanged: _handleOverlayChanged,
         contain: true,
         darkBg: false,
         isMobileFrame: false,
@@ -997,78 +1029,139 @@ class _PostCardState extends State<_PostCard> {
     final code = (data['itemCode'] ?? '').toString();
     final desc = (data['description'] ?? '').toString();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Stack(
+      clipBehavior: Clip.none,
       children: [
-        _BrandRowMobile(
-          brandKor: brandKor.isEmpty ? 'ALL' : brandKor,
-          brandEng: brandEng,
-          logoUrl: logoUrl,
-          showMore: widget.isAdmin,
-          onMenuSelected: _handleMobileMenuAction,
-          isAdmin: widget.isAdmin,
-        ),
-        _MediaCarousel(
-          media: media,
-          onZoomingChanged: widget.onZoomingChanged,
-          contain: true,
-          darkBg: false,
-          isMobileFrame: true,
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-          child: Row(
-            children: [
-              IconButton(
-                onPressed: _toggleLike,
-                icon: Icon(liked ? Icons.favorite : Icons.favorite_border),
-                color: liked ? Colors.redAccent : Colors.black,
-                iconSize: 26,
+        Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _BrandRowMobile(
+              brandKor: brandKor.isEmpty ? 'ALL' : brandKor,
+              brandEng: brandEng,
+              logoUrl: logoUrl,
+              showMore: widget.isAdmin,
+              onMenuSelected: _handleMobileMenuAction,
+              isAdmin: widget.isAdmin,
+            ),
+            Container(
+              key: _mediaAreaKey,
+              clipBehavior: Clip.none,
+              child: _MediaCarousel(
+                media: media,
+                onZoomingChanged: widget.onZoomingChanged,
+                onOverlayChanged: _handleOverlayChanged,
+                contain: true,
+                darkBg: false,
+                isMobileFrame: true,
               ),
-              const SizedBox(width: 4),
-              const Text(
-                '좋아요',
-                style: TextStyle(fontWeight: FontWeight.w700),
-              ),
-              const Spacer(),
-            ],
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 2, 16, 18),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title.isEmpty ? '(제목 없음)' : title,
-                style: const TextStyle(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w900,
-                  letterSpacing: -0.3,
-                ),
-              ),
-              if (widget.isAdmin && code.trim().isNotEmpty) ...[
-                const SizedBox(height: 6),
-                Text(
-                  code,
-                  style: TextStyle(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.black.withValues(alpha: 0.45),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
+              child: Row(
+                children: [
+                  IconButton(
+                    onPressed: _toggleLike,
+                    icon: Icon(liked ? Icons.favorite : Icons.favorite_border),
+                    color: liked ? Colors.redAccent : Colors.black,
+                    iconSize: 26,
                   ),
-                ),
-              ],
-              if (desc.trim().isNotEmpty) ...[
-                const SizedBox(height: 10),
-                Text(
-                  desc,
-                  style: const TextStyle(fontSize: 14, height: 1.5),
-                ),
-              ],
-            ],
-          ),
+                  const SizedBox(width: 4),
+                  const Text(
+                    '좋아요',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                  const Spacer(),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 2, 16, 18),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    title.isEmpty ? '(제목 없음)' : title,
+                    style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w900,
+                      letterSpacing: -0.3,
+                    ),
+                  ),
+                  if (widget.isAdmin && code.trim().isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      code,
+                      style: TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.black.withValues(alpha: 0.45),
+                      ),
+                    ),
+                  ],
+                  if (desc.trim().isNotEmpty) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      desc,
+                      style: const TextStyle(fontSize: 14, height: 1.5),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+          ],
         ),
-        const Divider(height: 1),
+        if (_overlayData != null)
+          Positioned.fill(
+            child: IgnorePointer(
+              child: LayoutBuilder(
+                builder: (context, rootConstraints) {
+                  final mediaBox =
+                  _mediaAreaKey.currentContext?.findRenderObject()
+                  as RenderBox?;
+                  final rootBox = context.findRenderObject() as RenderBox?;
+
+                  if (mediaBox == null || !mediaBox.hasSize) {
+                    return const SizedBox.shrink();
+                  }
+
+                  final mediaTopLeft =
+                  mediaBox.localToGlobal(Offset.zero, ancestor: rootBox);
+                  final mediaSize = mediaBox.size;
+                  final d = _overlayData!;
+
+                  const double _zoomOverlayYOffset = 150.0;
+
+                  return OverflowBox(
+                    alignment: Alignment.topLeft,
+                    minWidth: rootConstraints.maxWidth,
+                    maxWidth: double.infinity,
+                    minHeight: rootConstraints.maxHeight,
+                    maxHeight: double.infinity,
+                    child: Transform(
+                      alignment: Alignment.topLeft,
+                      transform: Matrix4.identity()
+                        ..translate(
+                          mediaTopLeft.dx + d.offset.dx,
+                          mediaTopLeft.dy + d.offset.dy - _zoomOverlayYOffset,
+                        )
+                        ..scale(d.scale, d.scale),
+                      child: SizedBox(
+                        width: mediaSize.width,
+                        height: mediaSize.height,
+                        child: Image(
+                          image: d.provider,
+                          fit: d.fit,
+                          filterQuality: FilterQuality.high,
+                          gaplessPlayback: true,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -1185,6 +1278,7 @@ class _BrandRowMobile extends StatelessWidget {
 class _MediaCarousel extends StatefulWidget {
   final List<_MediaEntry> media;
   final ValueChanged<bool> onZoomingChanged;
+  final ValueChanged<_ZoomOverlayData?> onOverlayChanged;
   final bool contain;
   final bool darkBg;
   final bool isMobileFrame;
@@ -1192,6 +1286,7 @@ class _MediaCarousel extends StatefulWidget {
   const _MediaCarousel({
     required this.media,
     required this.onZoomingChanged,
+    required this.onOverlayChanged,
     required this.contain,
     required this.darkBg,
     required this.isMobileFrame,
@@ -1224,6 +1319,14 @@ class _MediaCarouselState extends State<_MediaCarousel> {
     if (_childZooming == value) return;
     setState(() => _childZooming = value);
     widget.onZoomingChanged(value);
+
+    if (!value) {
+      widget.onOverlayChanged(null);
+    }
+  }
+
+  void _setOverlayData(_ZoomOverlayData? data) {
+    widget.onOverlayChanged(data);
   }
 
   void _goPrevPhoto() {
@@ -1353,6 +1456,7 @@ class _MediaCarouselState extends State<_MediaCarousel> {
             itemCount: widget.media.length,
             onPageChanged: (i) {
               setState(() => _idx = i);
+              widget.onOverlayChanged(null);
               _preloadCurrentAspectRatio();
             },
             itemBuilder: (_, i) {
@@ -1373,11 +1477,12 @@ class _MediaCarouselState extends State<_MediaCarousel> {
                 provider: m.provider!,
                 fit: fit,
                 onZoomingChanged: _setChildZooming,
+                onOverlayChanged: i == _idx ? _setOverlayData : (_) {},
               );
             },
           ),
         ),
-        if (kIsWeb && widget.media.length > 1 && _idx > 0)
+        if (kIsWeb && widget.media.length > 1 && !_childZooming && _idx > 0)
           Positioned(
             left: 12,
             top: 0,
@@ -1391,6 +1496,7 @@ class _MediaCarouselState extends State<_MediaCarousel> {
           ),
         if (kIsWeb &&
             widget.media.length > 1 &&
+            !_childZooming &&
             _idx < widget.media.length - 1)
           Positioned(
             right: 12,
@@ -1468,18 +1574,19 @@ class _InlineZoomableMediaImage extends StatefulWidget {
   final ImageProvider provider;
   final BoxFit fit;
   final ValueChanged<bool> onZoomingChanged;
+  final ValueChanged<_ZoomOverlayData?> onOverlayChanged;
 
   const _InlineZoomableMediaImage({
     required this.provider,
     required this.fit,
     required this.onZoomingChanged,
+    required this.onOverlayChanged,
   });
 
   @override
   State<_InlineZoomableMediaImage> createState() =>
       _InlineZoomableMediaImageState();
 }
-
 class _InlineZoomableMediaImageState extends State<_InlineZoomableMediaImage>
     with SingleTickerProviderStateMixin {
   late final AnimationController _resetController;
@@ -1490,11 +1597,12 @@ class _InlineZoomableMediaImageState extends State<_InlineZoomableMediaImage>
   double _scale = 1.0;
   Offset _offset = Offset.zero;
 
-  double _gestureStartScale = 1.0;
-  Offset _gestureStartOffset = Offset.zero;
-  Offset _sceneFocalPoint = Offset.zero;
+  double _startScale = 1.0;
+  Offset _normalizedOffset = Offset.zero;
 
+  int _pointerCount = 0;
   bool _zooming = false;
+  Size _lastSize = Size.zero;
 
   @override
   void initState() {
@@ -1502,13 +1610,21 @@ class _InlineZoomableMediaImageState extends State<_InlineZoomableMediaImage>
 
     _resetController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 170),
+      duration: const Duration(milliseconds: 180),
     )..addListener(() {
       if (!mounted) return;
       setState(() {
         _scale = _scaleAnim?.value ?? 1.0;
         _offset = _offsetAnim?.value ?? Offset.zero;
       });
+      _pushOverlay();
+    });
+
+    _resetController.addStatusListener((status) {
+      if (status == AnimationStatus.completed) {
+        _setZooming(false);
+        widget.onOverlayChanged(null);
+      }
     });
   }
 
@@ -1522,6 +1638,22 @@ class _InlineZoomableMediaImageState extends State<_InlineZoomableMediaImage>
     if (_zooming == value) return;
     _zooming = value;
     widget.onZoomingChanged(value);
+  }
+
+  void _pushOverlay() {
+    if (!_zooming || _lastSize == Size.zero) {
+      widget.onOverlayChanged(null);
+      return;
+    }
+
+    widget.onOverlayChanged(
+      _ZoomOverlayData(
+        provider: widget.provider,
+        fit: widget.fit,
+        scale: _scale,
+        offset: _offset,
+      ),
+    );
   }
 
   void _animateReset() {
@@ -1549,113 +1681,92 @@ class _InlineZoomableMediaImageState extends State<_InlineZoomableMediaImage>
       ..stop()
       ..reset()
       ..forward();
-
-    _setZooming(false);
   }
 
   @override
   Widget build(BuildContext context) {
     final mq = MediaQuery.of(context);
     final targetW =
-    (mq.size.width * mq.devicePixelRatio).clamp(800.0, 2600.0).round();
+    (mq.size.width * mq.devicePixelRatio).clamp(1200.0, 3000.0).round();
     final optimizedProvider = ResizeImage(widget.provider, width: targetW);
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = constraints.maxWidth;
-        final height = constraints.maxHeight;
+        _lastSize = Size(constraints.maxWidth, constraints.maxHeight);
 
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onScaleStart: (details) {
-            _resetController.stop();
-
-            _gestureStartScale = _scale;
-            _gestureStartOffset = _offset;
-
-            final localFocal = details.localFocalPoint;
-
-            _sceneFocalPoint = Offset(
-              (localFocal.dx - _gestureStartOffset.dx) / _gestureStartScale,
-              (localFocal.dy - _gestureStartOffset.dy) / _gestureStartScale,
-            );
-          },
-          onScaleUpdate: (details) {
-            double nextScale =
-            (_gestureStartScale * details.scale).clamp(1.0, 4.0);
-
-            final localFocal = details.localFocalPoint;
-
-            Offset nextOffset = Offset(
-              localFocal.dx - (_sceneFocalPoint.dx * nextScale),
-              localFocal.dy - (_sceneFocalPoint.dy * nextScale),
-            );
-
-            if (nextScale <= 1.001) {
-              nextScale = 1.0;
-              nextOffset = Offset.zero;
+        return Listener(
+          behavior: HitTestBehavior.translucent,
+          onPointerDown: (_) {
+            _pointerCount++;
+            if (_pointerCount >= 2) {
+              _resetController.stop();
+              _setZooming(true);
+              _pushOverlay();
             }
-
-            setState(() {
-              _scale = nextScale;
-              _offset = nextOffset;
-            });
-
-            _setZooming(nextScale > 1.01);
           },
-          onScaleEnd: (_) {
-            _animateReset();
+          onPointerUp: (_) {
+            _pointerCount = (_pointerCount - 1).clamp(0, 10);
+            if (_pointerCount < 2 && _zooming) {
+              _animateReset();
+            }
           },
-          child: Stack(
-            clipBehavior: Clip.none,
-            children: [
-              SizedBox(
-                width: width,
-                height: height,
+          onPointerCancel: (_) {
+            _pointerCount = 0;
+            if (_zooming) {
+              _animateReset();
+            }
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.translucent,
+            onScaleStart: (details) {
+              if (_pointerCount < 2) return;
+
+              _resetController.stop();
+              _startScale = _scale;
+              _normalizedOffset =
+                  (details.localFocalPoint - _offset) / _scale;
+
+              _setZooming(true);
+              _pushOverlay();
+            },
+            onScaleUpdate: (details) {
+              if (_pointerCount < 2) return;
+
+              double nextScale = (_startScale * details.scale).clamp(1.0, 4.0);
+              Offset nextOffset =
+                  details.localFocalPoint - (_normalizedOffset * nextScale);
+
+              if (nextScale <= 1.001) {
+                nextScale = 1.0;
+                nextOffset = Offset.zero;
+              }
+
+              setState(() {
+                _scale = nextScale;
+                _offset = nextOffset;
+              });
+
+              _setZooming(true);
+              _pushOverlay();
+            },
+            onScaleEnd: (_) {
+              if (_pointerCount < 2 && _zooming) {
+                _animateReset();
+              }
+            },
+            child: SizedBox(
+              width: constraints.maxWidth,
+              height: constraints.maxHeight,
+              child: Opacity(
+                opacity: _zooming ? 0.0 : 1.0,
                 child: Image(
                   image: optimizedProvider,
                   fit: widget.fit,
                   filterQuality: FilterQuality.high,
                   gaplessPlayback: true,
-                  width: double.infinity,
-                  height: double.infinity,
                 ),
               ),
-              if (_scale > 1.001)
-                Positioned.fill(
-                  child: IgnorePointer(
-                    child: OverflowBox(
-                      minWidth: width,
-                      minHeight: height,
-                      maxWidth: double.infinity,
-                      maxHeight: double.infinity,
-                      alignment: Alignment.topLeft,
-                      child: Transform(
-                        alignment: Alignment.topLeft,
-                        transform: Matrix4.identity()
-                          ..translate(_offset.dx, _offset.dy)
-                          ..scale(_scale, _scale),
-                        child: SizedBox(
-                          width: width,
-                          height: height,
-                          child: Material(
-                            color: Colors.transparent,
-                            elevation: 0,
-                            child: Image(
-                              image: optimizedProvider,
-                              fit: widget.fit,
-                              filterQuality: FilterQuality.high,
-                              gaplessPlayback: true,
-                              width: double.infinity,
-                              height: double.infinity,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-            ],
+            ),
           ),
         );
       },
